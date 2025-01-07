@@ -121,7 +121,7 @@ You can interact with your emails using natural language commands. Here are some
 
 - "Show me emails from last week"
 - "Find emails with subject containing 'meeting'"
-- "Search for emails from john@example.com between 2024-01-01 and 2024-01-07"
+- "Search for emails from recruiting@linkedin.com between 2024-01-01 and 2024-01-07"
 
 ### Read Email Content
 
@@ -148,6 +148,7 @@ claude-post/
 ├── README.md
 ├── LICENSE
 ├── .env                    # Not included in repo
+├── .python-version        # Python version specification
 └── src/
     └── email_client/
         ├── __init__.py
