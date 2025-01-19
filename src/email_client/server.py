@@ -190,6 +190,11 @@ async def handle_list_tools() -> list[types.Tool]:
                         "type": "string",
                         "description": "Keyword to search in email subject and body (optional)",
                     },
+                    "folder": {
+                        "type": "string",
+                        "description": "Folder to search in ('inbox' or 'sent', defaults to 'inbox')",
+                        "enum": ["inbox", "sent"],
+                    },
                 },
             },
         ),
@@ -308,9 +313,15 @@ async def handle_call_tool(
         # Connect to IMAP server using predefined credentials
         mail = imaplib.IMAP4_SSL(EMAIL_CONFIG["imap_server"])
         mail.login(EMAIL_CONFIG["email"], EMAIL_CONFIG["password"])
-        mail.select("inbox")
         
         if name == "search-emails":
+            # 选择文件夹
+            folder = arguments.get("folder", "inbox")  # 默认选择收件箱
+            if folder == "sent":
+                mail.select('"[Gmail]/Sent Mail"')  # 对于 Gmail
+            else:
+                mail.select("inbox")
+            
             # Get optional parameters
             start_date = arguments.get("start_date")
             end_date = arguments.get("end_date")
@@ -318,7 +329,8 @@ async def handle_call_tool(
             
             # If no dates provided, default to last 7 days
             if not start_date:
-                start_date = (datetime.now() - timedelta(days=7)).strftime("%d-%b-%Y")
+                start_date = datetime.now() - timedelta(days=7)
+                start_date = start_date.strftime("%d-%b-%Y")
             else:
                 start_date = datetime.strptime(start_date, "%Y-%m-%d").strftime("%d-%b-%Y")
                 

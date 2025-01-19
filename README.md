@@ -122,6 +122,7 @@ You can interact with your emails using natural language commands. Here are some
 - "Show me emails from last week"
 - "Find emails with subject containing 'meeting'"
 - "Search for emails from recruiting@linkedin.com between 2024-01-01 and 2024-01-07"
+- "Search sent emails from last month"
 
 ### Read Email Content
 
