@@ -70,7 +70,7 @@ A Model Context Protocol (MCP) server that provides a seamless email management 
 
 4. Configure Claude Desktop:
 
-   First, make sure you have Claude for Desktop installed. You can install the latest version [here](https://claude.ai/desktop). If you already have Claude for Desktop, make sure it's updated to the latest version.
+   First, make sure you have Claude for Desktop installed. You can install the latest version [here](https://claude.ai/download). If you already have Claude for Desktop, make sure it's updated to the latest version.
 
    Open your Claude Desktop configuration file:
 
