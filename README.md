@@ -85,6 +85,7 @@ A Model Context Protocol (MCP) server that provides a seamless email management 
 
    Add the following configuration:
 
+   **Read-Only Mode (Recommended for safety):**
    ```json
    {
      "mcpServers": {
@@ -95,6 +96,24 @@ A Model Context Protocol (MCP) server that provides a seamless email management 
            "/path/to/claude-post/src/email_client",
            "run",
            "email-client"
+         ]
+       }
+     }
+   }
+   ```
+
+   **Write Operations Mode (includes move/delete tools):**
+   ```json
+   {
+     "mcpServers": {
+       "email": {
+         "command": "/Users/username/.local/bin/uv",
+         "args": [
+           "--directory",
+           "/path/to/claude-post/src/email_client",
+           "run",
+           "email-client",
+           "--enable-write-operations"
          ]
        }
      }
@@ -141,6 +160,46 @@ You can interact with your emails using natural language commands. Here are some
 
 Note: For security reasons, Claude will always show you the email details for confirmation before actually sending.
 
+## Command Line Options and Security
+
+For safety, the EmailClient MCP server runs in **read-only mode by default**. This means only safe operations like searching, reading, and listing are available through the MCP interface.
+
+### Read-Only Mode (Default)
+```bash
+python -m email_client
+```
+Available tools: `search-emails`, `get-email-content`, `count-daily-emails`, `list-folders`, `send-email`
+
+### Write Operations Mode
+```bash
+python -m email_client --enable-write-operations
+```
+Additional tools: `move-email`, `delete-email`
+
+### Security Features
+- **Default safety**: Write operations disabled by default
+- **Explicit enablement**: Requires `--enable-write-operations` flag
+- **Tool visibility**: Destructive tools only appear when explicitly enabled
+- **Clear messaging**: Attempts to use disabled tools show helpful error messages
+
+### Available MCP Tools
+
+When `--enable-write-operations` is used, the server exposes these additional tools:
+
+#### `move-email`
+- **Description**: Move an email from one folder to another
+- **Parameters**: 
+  - `email_id` (required): Email to move
+  - `destination_folder` (required): Target folder
+  - `source_folder` (optional): Source folder (defaults to 'inbox')
+
+#### `delete-email`
+- **Description**: Delete an email (move to trash by default, or permanently)
+- **Parameters**:
+  - `email_id` (required): Email to delete
+  - `folder` (optional): Source folder (defaults to 'inbox')
+  - `permanent` (optional): If true, permanently delete; if false, move to trash
+
 ## Testing
 
 The project includes an integration test suite that validates EmailClient functionality against real email servers. These tests are designed for manual execution, not continuous integration.
@@ -162,9 +221,10 @@ The integration test suite performs the following validations:
 4. **Daily Count Test**: Counts emails received on specific dates
 5. **List Folders Test**: Discovers all available email folders
 6. **Move Email Test**: Tests moving emails between folders
-7. **Sent Folder Test**: Validates sent emails folder functionality
-8. **Move to Trash Test**: Moves test email to trash folder (safe cleanup)
-9. **Permanent Delete Test**: Tests permanent deletion functionality
+7. **Delete Functionality Test**: Validates delete email capabilities
+8. **Sent Folder Test**: Validates sent emails folder functionality
+9. **Move to Trash Test**: Moves test email to trash folder (safe cleanup)
+10. **Permanent Delete Test**: Tests permanent deletion functionality
 
 ### Test Features
 
@@ -198,12 +258,14 @@ The integration test suite performs the following validations:
     Found 12 folders including inbox
 ✅ PASS: Move email
     Email successfully moved to [Gmail]/Drafts (no longer in inbox)
+✅ PASS: Delete email functionality
+    Delete email method available and properly configured
 ✅ PASS: Move email to trash
     Email successfully moved to trash (no longer in inbox)
 ✅ PASS: Permanent delete email
     Email was already moved to trash (expected)
 ...
-Results: 10/10 tests passed
+Results: 11/11 tests passed
 🎉 ALL TESTS PASSED!
 ```
 

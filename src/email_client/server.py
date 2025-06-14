@@ -4,6 +4,7 @@ This module provides the Model Context Protocol server that exposes
 email functionality through standardized tools.
 """
 
+import argparse
 import asyncio
 import logging
 from datetime import datetime
@@ -49,6 +50,10 @@ server: Any = Server("email")
 # Single instance used by all MCP tool handlers to maintain connection
 # state and share configuration across email operations.
 email_client = EmailClient()
+
+# Global flag to control whether write operations (move/delete) are enabled
+# This is set via command line argument --enable-write-operations
+WRITE_OPERATIONS_ENABLED = False
 
 
 # MCP Tool Handler Functions
@@ -296,6 +301,42 @@ async def _handle_move_email(
         return [types.TextContent(type="text", text=f"Unexpected error: {e!s}")]
 
 
+async def _handle_delete_email(
+    arguments: Dict[str, Any],
+) -> List[Union[types.TextContent, types.ImageContent, types.EmbeddedResource]]:
+    """Handle delete-email tool to delete emails with optional permanent flag."""
+    email_id = arguments.get("email_id")
+    folder = arguments.get("folder", "inbox")
+    permanent = arguments.get("permanent", False)
+    
+    # Validate required parameters
+    if not email_id:
+        return [types.TextContent(type="text", text="Email ID is required.")]
+    
+    try:
+        await email_client.delete_email(email_id, folder, permanent)
+        
+        if permanent:
+            result_text = (
+                f"Successfully permanently deleted email {email_id} from '{folder}'.\n"
+                f"This action cannot be undone."
+            )
+        else:
+            result_text = (
+                f"Successfully moved email {email_id} to trash from '{folder}'.\n"
+                f"The email can be restored from the trash folder if needed."
+            )
+        
+        logging.info(f"Successfully deleted email {email_id} via MCP tool (permanent={permanent})")
+        return [types.TextContent(type="text", text=result_text)]
+        
+    except EmailDeletionError as e:
+        return [types.TextContent(type="text", text=f"Failed to delete email: {e!s}")]
+    except Exception as e:
+        logging.error(f"Unexpected error in delete email: {e!s}", exc_info=True)
+        return [types.TextContent(type="text", text=f"Unexpected error: {e!s}")]
+
+
 def _handle_unknown_tool(name: str) -> List[Union[types.TextContent, types.ImageContent, types.EmbeddedResource]]:
     """Handle unknown tool error."""
     raise ValueError(f"Unknown tool: {name}")
@@ -306,8 +347,10 @@ async def handle_list_tools() -> List[types.Tool]:
     """
     List available tools.
     Each tool specifies its arguments using JSON Schema validation.
+    Write operations (move-email, delete-email) are only included if enabled via --enable-write-operations flag.
     """
-    return [
+    # Core read-only tools that are always available
+    tools = [
         types.Tool(
             name="search-emails",
             description="Search emails within a date range and/or with specific keywords",
@@ -401,29 +444,58 @@ async def handle_list_tools() -> List[types.Tool]:
                 "properties": {},
             },
         ),
-        types.Tool(
-            name="move-email",
-            description="Move an email from one folder to another",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "email_id": {
-                        "type": "string",
-                        "description": "The ID of the email to move",
-                    },
-                    "source_folder": {
-                        "type": "string",
-                        "description": "Source folder containing the email (defaults to 'inbox')",
-                    },
-                    "destination_folder": {
-                        "type": "string",
-                        "description": "Destination folder to move the email to (use 'list-folders' to see options)",
-                    },
-                },
-                "required": ["email_id", "destination_folder"],
-            },
-        ),
     ]
+    
+    # Add write operations (move/delete) only if enabled
+    if WRITE_OPERATIONS_ENABLED:
+        tools.extend([
+            types.Tool(
+                name="move-email",
+                description="Move an email from one folder to another",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "email_id": {
+                            "type": "string",
+                            "description": "The ID of the email to move",
+                        },
+                        "source_folder": {
+                            "type": "string",
+                            "description": "Source folder containing the email (defaults to 'inbox')",
+                        },
+                        "destination_folder": {
+                            "type": "string",
+                            "description": "Destination folder to move the email to (use 'list-folders' to see options)",
+                        },
+                    },
+                    "required": ["email_id", "destination_folder"],
+                },
+            ),
+            types.Tool(
+                name="delete-email",
+                description="Delete an email (move to trash by default, or permanently with 'permanent' flag)",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "email_id": {
+                            "type": "string",
+                            "description": "The ID of the email to delete",
+                        },
+                        "folder": {
+                            "type": "string",
+                            "description": "Folder containing the email (defaults to 'inbox')",
+                        },
+                        "permanent": {
+                            "type": "boolean",
+                            "description": "If true, permanently delete. If false (default), move to trash",
+                        },
+                    },
+                    "required": ["email_id"],
+                },
+            ),
+        ])
+    
+    return tools
 
 
 @server.call_tool()  # type: ignore
@@ -449,7 +521,13 @@ async def handle_call_tool(
         elif name == "list-folders":
             return await _handle_list_folders(arguments)
         elif name == "move-email":
+            if not WRITE_OPERATIONS_ENABLED:
+                return [types.TextContent(type="text", text="Move operations are disabled. Use --enable-write-operations flag to enable.")]
             return await _handle_move_email(arguments)
+        elif name == "delete-email":
+            if not WRITE_OPERATIONS_ENABLED:
+                return [types.TextContent(type="text", text="Delete operations are disabled. Use --enable-write-operations flag to enable.")]
+            return await _handle_delete_email(arguments)
         else:
             return _handle_unknown_tool(name)
     except Exception as e:
@@ -457,11 +535,14 @@ async def handle_call_tool(
         return [types.TextContent(type="text", text=f"Error: {e!s}")]
 
 
-async def main() -> None:
+async def main(enable_write_operations: bool = False) -> None:
     """Main entry point for the MCP email server.
 
     Sets up and runs the Model Context Protocol server using stdio transport.
     The server communicates with Claude Desktop via stdin/stdout streams.
+
+    Args:
+        enable_write_operations: If True, enables move-email and delete-email tools
 
     This function:
     1. Creates stdio communication streams
@@ -469,7 +550,11 @@ async def main() -> None:
     3. Starts the main server event loop
     4. Handles graceful shutdown on completion
     """
+    global WRITE_OPERATIONS_ENABLED
+    WRITE_OPERATIONS_ENABLED = enable_write_operations
+    
     logging.info("Starting MCP server main function")
+    logging.info(f"Write operations enabled: {WRITE_OPERATIONS_ENABLED}")
 
     # Create stdin/stdout communication streams for MCP protocol
     async with mcp.server.stdio.stdio_server() as (read_stream, write_stream):
@@ -493,12 +578,36 @@ async def main() -> None:
 if __name__ == "__main__":
     """Entry point when running as a standalone script.
 
-    Handles top-level exceptions and provides clean shutdown behavior.
+    Handles command line argument parsing and top-level exceptions.
     This is typically called by Claude Desktop when the MCP server starts.
     """
+    # Parse command line arguments
+    parser = argparse.ArgumentParser(
+        description="EmailClient MCP Server - Email management through Claude",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  python -m email_client                           # Read-only mode (default)
+  python -m email_client --enable-write-operations # Enable move/delete operations
+
+Security:
+  By default, only read operations (search, read, list) are enabled.
+  Use --enable-write-operations to enable move-email and delete-email tools.
+        """
+    )
+    
+    parser.add_argument(
+        "--enable-write-operations",
+        action="store_true",
+        help="Enable write operations (move-email, delete-email). "
+             "By default, only read operations are available for safety."
+    )
+    
+    args = parser.parse_args()
+    
     try:
-        # Run the main server function
-        asyncio.run(main())
+        # Run the main server function with parsed arguments
+        asyncio.run(main(enable_write_operations=args.enable_write_operations))
     except KeyboardInterrupt:
         # Handle graceful shutdown on Ctrl+C
         logging.info("Server stopped by user")
