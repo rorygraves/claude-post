@@ -282,23 +282,14 @@ async def _handle_move_email(
     if not destination_folder:
         return [types.TextContent(type="text", text="Destination folder is required.")]
     
-    # Handle both single string and array inputs for backward compatibility
-    # Also handle JSON strings that may come from some MCP clients
-    if isinstance(email_ids, str):
-        # Try to parse as JSON first (for arrays sent as strings)
-        try:
-            import json
-            parsed_ids = json.loads(email_ids)
-            if isinstance(parsed_ids, list):
-                ids_to_move = parsed_ids
-            else:
-                ids_to_move = [email_ids]  # Treat as single email ID
-        except (json.JSONDecodeError, ValueError):
-            ids_to_move = [email_ids]  # Treat as single email ID
-    elif isinstance(email_ids, list):
+    # Handle array inputs (primary) and maintain backward compatibility for single strings
+    if isinstance(email_ids, list):
         ids_to_move = email_ids
+    elif isinstance(email_ids, str):
+        # Backward compatibility: convert single string to array
+        ids_to_move = [email_ids]
     else:
-        return [types.TextContent(type="text", text="Email IDs must be a string or array of strings.")]
+        return [types.TextContent(type="text", text="Email IDs must be an array of strings.")]
     
     if not ids_to_move:
         return [types.TextContent(type="text", text="At least one email ID is required.")]
@@ -337,23 +328,14 @@ async def _handle_delete_email(
     if not email_ids:
         return [types.TextContent(type="text", text="Email IDs are required.")]
     
-    # Handle both single string and array inputs for backward compatibility
-    # Also handle JSON strings that may come from some MCP clients
-    if isinstance(email_ids, str):
-        # Try to parse as JSON first (for arrays sent as strings)
-        try:
-            import json
-            parsed_ids = json.loads(email_ids)
-            if isinstance(parsed_ids, list):
-                ids_to_delete = parsed_ids
-            else:
-                ids_to_delete = [email_ids]  # Treat as single email ID
-        except (json.JSONDecodeError, ValueError):
-            ids_to_delete = [email_ids]  # Treat as single email ID
-    elif isinstance(email_ids, list):
+    # Handle array inputs (primary) and maintain backward compatibility for single strings
+    if isinstance(email_ids, list):
         ids_to_delete = email_ids
+    elif isinstance(email_ids, str):
+        # Backward compatibility: convert single string to array
+        ids_to_delete = [email_ids]
     else:
-        return [types.TextContent(type="text", text="Email IDs must be a string or array of strings.")]
+        return [types.TextContent(type="text", text="Email IDs must be an array of strings.")]
     
     if not ids_to_delete:
         return [types.TextContent(type="text", text="At least one email ID is required.")]
@@ -501,16 +483,14 @@ async def handle_list_tools() -> List[types.Tool]:
         tools.extend([
             types.Tool(
                 name="move-email",
-                description="Move one or more emails from one folder to another",
+                description="Move one or more emails from one folder to another. Use an array of email IDs, even for single emails.",
                 inputSchema={
                     "type": "object",
                     "properties": {
                         "email_ids": {
-                            "oneOf": [
-                                {"type": "string", "description": "Single email ID to move"},
-                                {"type": "array", "items": {"type": "string"}, "description": "Array of email IDs to move"}
-                            ],
-                            "description": "The ID(s) of the email(s) to move. Can be a single string or array of strings.",
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Array of email IDs to move. For a single email, use an array with one element.",
                         },
                         "source_folder": {
                             "type": "string",
@@ -526,16 +506,14 @@ async def handle_list_tools() -> List[types.Tool]:
             ),
             types.Tool(
                 name="delete-email",
-                description="Delete one or more emails (move to trash by default, or permanently with 'permanent' flag)",
+                description="Delete one or more emails (move to trash by default, or permanently with 'permanent' flag). Use an array of email IDs, even for single emails.",
                 inputSchema={
                     "type": "object",
                     "properties": {
                         "email_ids": {
-                            "oneOf": [
-                                {"type": "string", "description": "Single email ID to delete"},
-                                {"type": "array", "items": {"type": "string"}, "description": "Array of email IDs to delete"}
-                            ],
-                            "description": "The ID(s) of the email(s) to delete. Can be a single string or array of strings.",
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Array of email IDs to delete. For a single email, use an array with one element.",
                         },
                         "folder": {
                             "type": "string",
