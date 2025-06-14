@@ -232,6 +232,37 @@ async def _handle_count_daily_emails(
         return [types.TextContent(type="text", text=f"Failed to count emails: {e!s}")]
 
 
+async def _handle_list_folders(
+    arguments: Dict[str, Any],
+) -> List[Union[types.TextContent, types.ImageContent, types.EmbeddedResource]]:
+    """Handle list-folders tool to discover available email folders."""
+    try:
+        folders = await email_client.list_folders()
+        
+        if not folders:
+            return [types.TextContent(type="text", text="No folders found.")]
+        
+        # Format the results as a table
+        result_text = "Available email folders:\n\n"
+        result_text += "Folder Name | Display Name | Attributes\n"
+        result_text += "-" * 60 + "\n"
+        
+        for folder in folders:
+            result_text += f"{folder['name']} | {folder['display_name']} | {folder['attributes']}\n"
+        
+        result_text += f"\nFound {len(folders)} folders total.\n"
+        result_text += "Use any 'Folder Name' value in the search-emails tool."
+        
+        logging.info(f"Successfully returned {len(folders)} folders")
+        return [types.TextContent(type="text", text=result_text)]
+        
+    except EmailSearchError as e:
+        return [types.TextContent(type="text", text=f"Failed to list folders: {e!s}")]
+    except Exception as e:
+        logging.error(f"Unexpected error in list folders: {e!s}", exc_info=True)
+        return [types.TextContent(type="text", text=f"Unexpected error: {e!s}")]
+
+
 def _handle_unknown_tool(name: str) -> List[Union[types.TextContent, types.ImageContent, types.EmbeddedResource]]:
     """Handle unknown tool error."""
     raise ValueError(f"Unknown tool: {name}")
@@ -264,8 +295,7 @@ async def handle_list_tools() -> List[types.Tool]:
                     },
                     "folder": {
                         "type": "string",
-                        "description": "Folder to search in ('inbox' or 'sent', defaults to 'inbox')",
-                        "enum": ["inbox", "sent"],
+                        "description": "Folder to search in (use 'list-folders' tool to see available folders, defaults to 'inbox')",
                     },
                 },
             },
@@ -330,6 +360,14 @@ async def handle_list_tools() -> List[types.Tool]:
                 "required": ["to", "subject", "content"],
             },
         ),
+        types.Tool(
+            name="list-folders",
+            description="List all available email folders that can be used with other tools",
+            inputSchema={
+                "type": "object",
+                "properties": {},
+            },
+        ),
     ]
 
 
@@ -353,6 +391,8 @@ async def handle_call_tool(
             return await _handle_get_email_content(arguments)
         elif name == "count-daily-emails":
             return await _handle_count_daily_emails(arguments)
+        elif name == "list-folders":
+            return await _handle_list_folders(arguments)
         else:
             return _handle_unknown_tool(name)
     except Exception as e:

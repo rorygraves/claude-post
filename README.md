@@ -160,9 +160,10 @@ The integration test suite performs the following validations:
 2. **Search Emails Test**: Searches for emails using date ranges and keywords
 3. **Email Content Test**: Retrieves and validates full email content (10+ validation checks)
 4. **Daily Count Test**: Counts emails received on specific dates
-5. **Sent Folder Test**: Validates sent emails folder functionality
-6. **Move to Trash Test**: Moves test email to trash folder (safe cleanup)
-7. **Permanent Delete Test**: Tests permanent deletion functionality
+5. **List Folders Test**: Discovers all available email folders
+6. **Sent Folder Test**: Validates sent emails folder functionality
+7. **Move to Trash Test**: Moves test email to trash folder (safe cleanup)
+8. **Permanent Delete Test**: Tests permanent deletion functionality
 
 ### Test Features
 
@@ -192,12 +193,14 @@ The integration test suite performs the following validations:
     Found 15 emails for 2024-01-15
 ✅ PASS: Get email content
     All 10 validation checks passed
+✅ PASS: List folders
+    Found 12 folders including inbox
 ✅ PASS: Move email to trash
     Email successfully moved to trash (no longer in inbox)
 ✅ PASS: Permanent delete email
     Email was already moved to trash (expected)
 ...
-Results: 8/8 tests passed
+Results: 9/9 tests passed
 🎉 ALL TESTS PASSED!
 ```
 

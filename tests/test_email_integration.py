@@ -241,8 +241,40 @@ This email can be safely deleted after the integration test completes.
             self.log_result("Search sent emails", False, f"Error: {e}")
             return False
 
+    async def test_list_folders(self) -> bool:
+        """Test 6: List available email folders."""
+        print("\n🔄 Testing: List available folders...")
+        
+        try:
+            folders = await self.client.list_folders()
+            
+            if folders:
+                folder_count = len(folders)
+                # Check for expected folders (inbox should always exist)
+                has_inbox = any(folder['name'].lower() in ['inbox', 'INBOX'] for folder in folders)
+                
+                if has_inbox:
+                    self.log_result("List folders", True, 
+                                  f"Found {folder_count} folders including inbox")
+                    
+                    # Log some folder examples for debugging
+                    sample_folders = [f"{f['name']} ({f['display_name']})" for f in folders[:3]]
+                    logging.info(f"Sample folders: {sample_folders}")
+                    return True
+                else:
+                    self.log_result("List folders", False, 
+                                  f"Found {folder_count} folders but no inbox folder")
+                    return False
+            else:
+                self.log_result("List folders", False, "No folders returned")
+                return False
+                
+        except Exception as e:
+            self.log_result("List folders", False, f"Error: {e}")
+            return False
+
     async def test_delete_email_to_trash(self, email_id: str) -> bool:
-        """Test 7a: Move test email to trash (default deletion behavior)."""
+        """Test 8a: Move test email to trash (default deletion behavior)."""
         print("\n🔄 Testing: Move test email to trash...")
         
         try:
@@ -278,7 +310,7 @@ This email can be safely deleted after the integration test completes.
             return False
 
     async def test_delete_email_permanent(self, email_id: str) -> bool:
-        """Test 7b: Permanently delete test email (if still accessible)."""
+        """Test 8b: Permanently delete test email (if still accessible)."""
         print("\n🔄 Testing: Permanently delete test email...")
         
         try:
@@ -359,10 +391,13 @@ This email can be safely deleted after the integration test completes.
         # Test 5: Count daily emails
         await self.test_count_daily_emails()
         
-        # Test 6: Search sent emails
+        # Test 6: List available folders
+        await self.test_list_folders()
+        
+        # Test 7: Search sent emails
         await self.test_search_sent_emails()
         
-        # Test 7a: Move test email to trash (only if we found it and content test passed)
+        # Test 8a: Move test email to trash (only if we found it and content test passed)
         if test_email_id and content_test_passed:
             trash_test_passed = await self.test_delete_email_to_trash(test_email_id)
         else:
@@ -370,7 +405,7 @@ This email can be safely deleted after the integration test completes.
             self.log_result("Move email to trash", False, f"Skipped - {reason}")
             trash_test_passed = False
         
-        # Test 7b: Try permanent deletion (only if previous tests passed)
+        # Test 8b: Try permanent deletion (only if previous tests passed)
         if test_email_id and content_test_passed and not trash_test_passed:
             # Only test permanent deletion if trash move failed (email still in inbox)
             await self.test_delete_email_permanent(test_email_id)

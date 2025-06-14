@@ -398,14 +398,44 @@ class EmailClient:
                 await self.close_imap_connection(mail)
 
     async def _select_folder(self, mail: imaplib.IMAP4_SSL, folder: str) -> None:
-        """Select the appropriate email folder."""
+        """Select the appropriate email folder by name.
+        
+        Args:
+            mail: Active IMAP connection
+            folder: Folder name to select. Can be:
+                   - 'inbox' or 'INBOX' (case insensitive)
+                   - 'sent' (maps to Gmail sent folder)
+                   - Any exact folder name from list_folders()
+        
+        Raises:
+            EmailSearchError: If folder selection fails
+        """
         logging.info(f"Selecting folder: {folder}")
-        if folder == "sent":
-            result = mail.select('"[Gmail]/Sent Mail"')
-            logging.info(f"Selected sent folder, result: {result}")
-        else:
-            result = mail.select("inbox")
-            logging.info(f"Selected inbox, result: {result}")
+        
+        # Handle special folder mappings for backwards compatibility
+        folder_to_select = folder
+        if folder.lower() == "inbox":
+            folder_to_select = "INBOX"
+        elif folder.lower() == "sent":
+            # Map 'sent' to Gmail's sent folder for backwards compatibility
+            folder_to_select = "[Gmail]/Sent Mail"
+        
+        try:
+            # Select the folder (add quotes if not already quoted)
+            if not (folder_to_select.startswith('"') and folder_to_select.endswith('"')):
+                quoted_folder = f'"{folder_to_select}"'
+            else:
+                quoted_folder = folder_to_select
+                
+            result = mail.select(quoted_folder)
+            if result[0] != 'OK':
+                raise EmailSearchError(f"Failed to select folder {quoted_folder}: {result[1]}")
+                
+            logging.info(f"Successfully selected folder {quoted_folder}, result: {result}")
+            
+        except Exception as e:
+            logging.error(f"Error selecting folder {folder}: {e!s}")
+            raise EmailSearchError(f"Failed to select folder '{folder}': {e!s}") from e
 
     async def _get_trash_folder_name(self, mail: imaplib.IMAP4_SSL) -> str:
         """Determine the correct trash folder name for this email provider."""
@@ -434,6 +464,64 @@ class EmailClient:
         default_trash = '"[Gmail]/Bin"'
         logging.info(f"Using default trash folder: {default_trash}")
         return default_trash
+
+    async def list_folders(self) -> List[Dict[str, str]]:
+        """List all available IMAP folders with their attributes.
+        
+        Returns:
+            List of dictionaries containing folder information:
+            [{'name': str, 'display_name': str, 'attributes': str}, ...]
+            
+        Raises:
+            EmailConnectionError: If IMAP connection fails
+            EmailSearchError: If folder listing fails
+        """
+        mail = None
+        try:
+            mail = await self.connect_imap()
+            
+            # List all folders
+            logging.info("Listing all available IMAP folders")
+            loop = asyncio.get_event_loop()
+            _, folders = await loop.run_in_executor(None, mail.list)
+            
+            folder_list = []
+            for folder_bytes in folders:
+                folder_str = folder_bytes.decode('utf-8')
+                # Parse IMAP LIST response: (attributes) "delimiter" "folder_name"
+                parts = folder_str.split('"')
+                if len(parts) >= 3:
+                    attributes = parts[0].strip('() ')
+                    folder_name = parts[-2]  # The quoted folder name
+                    
+                    # Create display name (remove Gmail prefixes for readability)
+                    display_name = folder_name
+                    if folder_name.startswith('[Gmail]/'):
+                        display_name = folder_name.replace('[Gmail]/', '')
+                    
+                    folder_info = {
+                        'name': folder_name,
+                        'display_name': display_name,
+                        'attributes': attributes
+                    }
+                    folder_list.append(folder_info)
+                    logging.debug(f"Found folder: {folder_info}")
+            
+            # Sort folders for consistent ordering (inbox first, then alphabetical)
+            folder_list.sort(key=lambda x: (
+                x['name'].lower() != 'inbox',  # inbox first
+                x['display_name'].lower()
+            ))
+            
+            logging.info(f"Successfully listed {len(folder_list)} folders")
+            return folder_list
+            
+        except Exception as e:
+            logging.error(f"Error listing folders: {e!s}", exc_info=True)
+            raise EmailSearchError(f"Failed to list folders: {e!s}") from e
+        finally:
+            if mail:
+                await self.close_imap_connection(mail)
 
     async def count_daily_emails(self, start_date: str, end_date: str) -> Dict[str, int]:
         """Count emails received for each day in the specified date range.
