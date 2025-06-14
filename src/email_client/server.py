@@ -283,8 +283,18 @@ async def _handle_move_email(
         return [types.TextContent(type="text", text="Destination folder is required.")]
     
     # Handle both single string and array inputs for backward compatibility
+    # Also handle JSON strings that may come from some MCP clients
     if isinstance(email_ids, str):
-        ids_to_move = [email_ids]
+        # Try to parse as JSON first (for arrays sent as strings)
+        try:
+            import json
+            parsed_ids = json.loads(email_ids)
+            if isinstance(parsed_ids, list):
+                ids_to_move = parsed_ids
+            else:
+                ids_to_move = [email_ids]  # Treat as single email ID
+        except (json.JSONDecodeError, ValueError):
+            ids_to_move = [email_ids]  # Treat as single email ID
     elif isinstance(email_ids, list):
         ids_to_move = email_ids
     else:
@@ -328,8 +338,18 @@ async def _handle_delete_email(
         return [types.TextContent(type="text", text="Email IDs are required.")]
     
     # Handle both single string and array inputs for backward compatibility
+    # Also handle JSON strings that may come from some MCP clients
     if isinstance(email_ids, str):
-        ids_to_delete = [email_ids]
+        # Try to parse as JSON first (for arrays sent as strings)
+        try:
+            import json
+            parsed_ids = json.loads(email_ids)
+            if isinstance(parsed_ids, list):
+                ids_to_delete = parsed_ids
+            else:
+                ids_to_delete = [email_ids]  # Treat as single email ID
+        except (json.JSONDecodeError, ValueError):
+            ids_to_delete = [email_ids]  # Treat as single email ID
     elif isinstance(email_ids, list):
         ids_to_delete = email_ids
     else:
