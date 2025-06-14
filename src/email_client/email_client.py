@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
-from typing import Any, Dict, List, Literal, Optional, Tuple
+from typing import Any, Dict, List, Literal, Optional, Tuple, Union
 
 # Constants from environment configuration
 from .config import EMAIL_ADDRESS, EMAIL_PASSWORD, IMAP_SERVER, SMTP_PORT, SMTP_SERVER
@@ -322,12 +322,12 @@ class EmailClient:
             logging.error(f"Error in send_email: {e!s}", exc_info=True)
             raise EmailSendError(f"Failed to send email: {e!s}") from e
 
-    async def delete_email(self, email_id: str, folder: str = "inbox", permanent: bool = False) -> None:
-        """Delete a specific email by moving to trash or permanently deleting.
+    async def delete_email(self, email_ids: Union[str, List[str]], folder: str = "inbox", permanent: bool = False) -> None:
+        """Delete one or more emails by moving to trash or permanently deleting.
 
         Args:
-            email_id: The ID of the email to delete
-            folder: The folder containing the email ('inbox' or 'sent')
+            email_ids: The ID(s) of the email(s) to delete. Can be a single string or list of strings.
+            folder: The folder containing the email(s) ('inbox' or 'sent')
             permanent: If True, permanently delete (mark + expunge). 
                       If False (default), move to trash folder.
 
@@ -335,38 +335,51 @@ class EmailClient:
             EmailDeletionError: If the deletion operation fails
             EmailConnectionError: If IMAP connection fails
         """
-        if permanent:
-            await self._permanent_delete_email(email_id, folder)
+        # Convert single email ID to list for uniform processing
+        if isinstance(email_ids, str):
+            ids_to_process = [email_ids]
         else:
-            await self._move_email_to_trash(email_id, folder)
+            ids_to_process = email_ids
+            
+        if not ids_to_process:
+            raise EmailDeletionError("No email IDs provided for deletion")
+        
+        # Process all emails in a single connection
+        if permanent:
+            await self._permanent_delete_emails(ids_to_process, folder)
+        else:
+            await self._move_emails_to_trash(ids_to_process, folder)
 
-    async def _permanent_delete_email(self, email_id: str, folder: str) -> None:
-        """Permanently delete an email by marking as deleted and expunging."""
+    async def _permanent_delete_emails(self, email_ids: List[str], folder: str) -> None:
+        """Permanently delete multiple emails by marking as deleted and expunging."""
         mail = None
         try:
             mail = await self.connect_imap()
             await self._select_folder(mail, folder)
 
-            # Mark email as deleted
-            logging.info(f"Permanently deleting email {email_id}")
+            logging.info(f"Permanently deleting {len(email_ids)} emails")
             loop = asyncio.get_event_loop()
-            await loop.run_in_executor(None, lambda: mail.store(email_id, '+FLAGS', '\\Deleted'))
+            
+            # Mark all emails as deleted
+            for email_id in email_ids:
+                logging.debug(f"Marking email {email_id} as deleted")
+                await loop.run_in_executor(None, lambda id=email_id: mail.store(id, '+FLAGS', '\\Deleted'))
 
-            # Expunge to permanently delete
-            logging.info(f"Expunging deleted email {email_id}")
+            # Single expunge operation to remove all marked emails
+            logging.info(f"Expunging {len(email_ids)} deleted emails")
             await loop.run_in_executor(None, mail.expunge)
 
-            logging.info(f"Successfully permanently deleted email {email_id}")
+            logging.info(f"Successfully permanently deleted {len(email_ids)} emails")
 
         except Exception as e:
             logging.error(f"Error in permanent delete: {e!s}", exc_info=True)
-            raise EmailDeletionError(f"Failed to permanently delete email {email_id}: {e!s}") from e
+            raise EmailDeletionError(f"Failed to permanently delete emails {email_ids}: {e!s}") from e
         finally:
             if mail:
                 await self.close_imap_connection(mail)
 
-    async def _move_email_to_trash(self, email_id: str, folder: str) -> None:
-        """Move an email to the trash folder."""
+    async def _move_emails_to_trash(self, email_ids: List[str], folder: str) -> None:
+        """Move multiple emails to the trash folder."""
         mail = None
         try:
             mail = await self.connect_imap()
@@ -375,24 +388,25 @@ class EmailClient:
             # Determine trash folder name
             trash_folder = await self._get_trash_folder_name(mail)
             
-            # Move email to trash (copy + mark deleted + expunge)
-            logging.info(f"Moving email {email_id} to trash folder: {trash_folder}")
+            logging.info(f"Moving {len(email_ids)} emails to trash folder: {trash_folder}")
             loop = asyncio.get_event_loop()
             
-            # Copy email to trash folder
-            await loop.run_in_executor(None, lambda: mail.copy(email_id, trash_folder))
+            # Process all emails: copy to trash, mark as deleted
+            for email_id in email_ids:
+                logging.debug(f"Moving email {email_id} to trash")
+                # Copy email to trash folder
+                await loop.run_in_executor(None, lambda id=email_id: mail.copy(id, trash_folder))
+                # Mark original email as deleted
+                await loop.run_in_executor(None, lambda id=email_id: mail.store(id, '+FLAGS', '\\Deleted'))
             
-            # Mark original email as deleted
-            await loop.run_in_executor(None, lambda: mail.store(email_id, '+FLAGS', '\\Deleted'))
-            
-            # Expunge to remove from current folder
+            # Single expunge operation to remove all emails from current folder
             await loop.run_in_executor(None, mail.expunge)
 
-            logging.info(f"Successfully moved email {email_id} to trash")
+            logging.info(f"Successfully moved {len(email_ids)} emails to trash")
 
         except Exception as e:
-            logging.error(f"Error moving to trash: {e!s}", exc_info=True)
-            raise EmailDeletionError(f"Failed to move email {email_id} to trash: {e!s}") from e
+            logging.error(f"Error moving emails to trash: {e!s}", exc_info=True)
+            raise EmailDeletionError(f"Failed to move emails {email_ids} to trash: {e!s}") from e
         finally:
             if mail:
                 await self.close_imap_connection(mail)

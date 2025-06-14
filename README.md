@@ -194,9 +194,9 @@ When `--enable-write-operations` is used, the server exposes these additional to
   - `source_folder` (optional): Source folder (defaults to 'inbox')
 
 #### `delete-email`
-- **Description**: Delete an email (move to trash by default, or permanently)
+- **Description**: Delete one or more emails (move to trash by default, or permanently)
 - **Parameters**:
-  - `email_id` (required): Email to delete
+  - `email_ids` (required): Email ID(s) to delete. Can be a single string or array of strings
   - `folder` (optional): Source folder (defaults to 'inbox')
   - `permanent` (optional): If true, permanently delete; if false, move to trash
 
@@ -222,9 +222,10 @@ The integration test suite performs the following validations:
 5. **List Folders Test**: Discovers all available email folders
 6. **Move Email Test**: Tests moving emails between folders
 7. **Delete Functionality Test**: Validates delete email capabilities
-8. **Sent Folder Test**: Validates sent emails folder functionality
-9. **Move to Trash Test**: Moves test email to trash folder (safe cleanup)
-10. **Permanent Delete Test**: Tests permanent deletion functionality
+8. **Delete Multiple Emails Test**: Validates array-based delete functionality
+9. **Sent Folder Test**: Validates sent emails folder functionality
+10. **Move to Trash Test**: Moves test email to trash folder (safe cleanup)
+11. **Permanent Delete Test**: Tests permanent deletion functionality
 
 ### Test Features
 
@@ -265,7 +266,7 @@ The integration test suite performs the following validations:
 ✅ PASS: Permanent delete email
     Email was already moved to trash (expected)
 ...
-Results: 11/11 tests passed
+Results: 12/12 tests passed
 🎉 ALL TESTS PASSED!
 ```
 

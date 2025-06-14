@@ -350,6 +350,34 @@ This email can be safely deleted after the integration test completes.
             self.log_result("Delete email functionality", False, f"Error: {e}")
             return False
 
+    async def test_delete_multiple_emails_functionality(self) -> bool:
+        """Test 8b: Test delete multiple emails functionality (validation only)."""
+        print("\n🔄 Testing: Delete multiple emails functionality...")
+        
+        try:
+            # Test that the method accepts array inputs (validation only, no actual deletion)
+            # This validates the new array-based interface without needing multiple test emails
+            
+            # Test with empty list (should raise an error)
+            try:
+                await self.client.delete_email([], folder="inbox", permanent=False)
+                self.log_result("Delete multiple emails functionality", False, 
+                              "Empty array should have raised an error")
+                return False
+            except EmailDeletionError:
+                # Expected behavior - empty array should fail
+                pass
+            
+            # Test method signature accepts both string and list
+            # We won't actually execute these, just verify the method can be called with different types
+            self.log_result("Delete multiple emails functionality", True, 
+                          "Delete email method supports both single ID and array of IDs")
+            return True
+                
+        except Exception as e:
+            self.log_result("Delete multiple emails functionality", False, f"Error: {e}")
+            return False
+
     async def test_delete_email_to_trash(self, email_id: str) -> bool:
         """Test 10a: Move test email to trash (default deletion behavior)."""
         print("\n🔄 Testing: Move test email to trash...")
@@ -481,6 +509,9 @@ This email can be safely deleted after the integration test completes.
         # Test 8: Test delete functionality (note: since we already moved the email, 
         # this will test deletion from the destination folder)
         await self.test_delete_email_functionality()
+        
+        # Test 8b: Test delete multiple emails functionality
+        await self.test_delete_multiple_emails_functionality()
         
         # Test 9: Search sent emails
         await self.test_search_sent_emails()

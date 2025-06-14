@@ -303,36 +303,52 @@ async def _handle_move_email(
 async def _handle_delete_email(
     arguments: Dict[str, Any],
 ) -> List[Union[types.TextContent, types.ImageContent, types.EmbeddedResource]]:
-    """Handle delete-email tool to delete emails with optional permanent flag."""
-    email_id = arguments.get("email_id")
+    """Handle delete-email tool to delete one or more emails with optional permanent flag."""
+    email_ids = arguments.get("email_ids")
     folder = arguments.get("folder", "inbox")
     permanent = arguments.get("permanent", False)
     
     # Validate required parameters
-    if not email_id:
-        return [types.TextContent(type="text", text="Email ID is required.")]
+    if not email_ids:
+        return [types.TextContent(type="text", text="Email IDs are required.")]
+    
+    # Handle both single string and array inputs for backward compatibility
+    if isinstance(email_ids, str):
+        ids_to_delete = [email_ids]
+    elif isinstance(email_ids, list):
+        ids_to_delete = email_ids
+    else:
+        return [types.TextContent(type="text", text="Email IDs must be a string or array of strings.")]
+    
+    if not ids_to_delete:
+        return [types.TextContent(type="text", text="At least one email ID is required.")]
     
     try:
-        await email_client.delete_email(email_id, folder, permanent)
+        await email_client.delete_email(ids_to_delete, folder, permanent)
+        
+        count = len(ids_to_delete)
+        email_word = "email" if count == 1 else "emails"
         
         if permanent:
             result_text = (
-                f"Successfully permanently deleted email {email_id} from '{folder}'.\n"
-                f"This action cannot be undone."
+                f"Successfully permanently deleted {count} {email_word} from '{folder}'.\n"
+                f"This action cannot be undone.\n"
+                f"Deleted IDs: {', '.join(ids_to_delete)}"
             )
         else:
             result_text = (
-                f"Successfully moved email {email_id} to trash from '{folder}'.\n"
-                f"The email can be restored from the trash folder if needed."
+                f"Successfully moved {count} {email_word} to trash from '{folder}'.\n"
+                f"The {email_word} can be restored from the trash folder if needed.\n"
+                f"Moved IDs: {', '.join(ids_to_delete)}"
             )
         
-        logging.info(f"Successfully deleted email {email_id} via MCP tool (permanent={permanent})")
+        logging.info(f"Successfully deleted {count} emails via MCP tool (permanent={permanent})")
         return [types.TextContent(type="text", text=result_text)]
         
     except EmailDeletionError as e:
-        return [types.TextContent(type="text", text=f"Failed to delete email: {e!s}")]
+        return [types.TextContent(type="text", text=f"Failed to delete emails: {e!s}")]
     except Exception as e:
-        logging.error(f"Unexpected error in delete email: {e!s}", exc_info=True)
+        logging.error(f"Unexpected error in delete emails: {e!s}", exc_info=True)
         return [types.TextContent(type="text", text=f"Unexpected error: {e!s}")]
 
 
@@ -472,24 +488,27 @@ async def handle_list_tools() -> List[types.Tool]:
             ),
             types.Tool(
                 name="delete-email",
-                description="Delete an email (move to trash by default, or permanently with 'permanent' flag)",
+                description="Delete one or more emails (move to trash by default, or permanently with 'permanent' flag)",
                 inputSchema={
                     "type": "object",
                     "properties": {
-                        "email_id": {
-                            "type": "string",
-                            "description": "The ID of the email to delete",
+                        "email_ids": {
+                            "oneOf": [
+                                {"type": "string", "description": "Single email ID to delete"},
+                                {"type": "array", "items": {"type": "string"}, "description": "Array of email IDs to delete"}
+                            ],
+                            "description": "The ID(s) of the email(s) to delete. Can be a single string or array of strings.",
                         },
                         "folder": {
                             "type": "string",
-                            "description": "Folder containing the email (defaults to 'inbox')",
+                            "description": "Folder containing the email(s) (defaults to 'inbox')",
                         },
                         "permanent": {
                             "type": "boolean",
                             "description": "If true, permanently delete. If false (default), move to trash",
                         },
                     },
-                    "required": ["email_id"],
+                    "required": ["email_ids"],
                 },
             ),
         ])
