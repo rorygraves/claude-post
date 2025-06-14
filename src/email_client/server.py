@@ -575,6 +575,12 @@ async def main(enable_write_operations: bool = False) -> None:
     logging.info(f"Write operations enabled: {WRITE_OPERATIONS_ENABLED}")
     logging.info(f"Available tools: {'read/write' if WRITE_OPERATIONS_ENABLED else 'read-only'}")
 
+    # Query and log IMAP server capabilities for debugging
+    try:
+        await email_client.query_server_capabilities()
+    except Exception as e:
+        logging.warning(f"Failed to query server capabilities (server will still work): {e}")
+
     # Create stdin/stdout communication streams for MCP protocol
     async with mcp.server.stdio.stdio_server() as (read_stream, write_stream):
         logging.info("stdio server created, starting server.run")

@@ -224,6 +224,69 @@ class EmailClient:
         except Exception as e:
             logging.warning(f"Error closing IMAP connection: {e!s}")
 
+    async def query_server_capabilities(self) -> None:
+        """Query and log IMAP server capabilities for debugging and feature discovery."""
+        mail = None
+        try:
+            mail = await self.connect_imap()
+            
+            logging.info("=== IMAP Server Capabilities ===")
+            
+            # Query server capabilities
+            typ, capability_data = mail.capability()
+            if typ == 'OK' and capability_data:
+                capabilities = capability_data[0].decode('utf-8')
+                logging.info(f"Server capabilities: {capabilities}")
+                
+                # Parse and log interesting capabilities
+                cap_list = capabilities.split()
+                interesting_caps = [
+                    'IDLE', 'MOVE', 'QUOTA', 'NAMESPACE', 'UNSELECT', 
+                    'UIDPLUS', 'CONDSTORE', 'QRESYNC', 'SORT', 'THREAD',
+                    'COMPRESS', 'ENABLE', 'LIST-EXTENDED', 'SPECIAL-USE'
+                ]
+                
+                found_caps = [cap for cap in interesting_caps if cap in cap_list]
+                if found_caps:
+                    logging.info(f"Notable capabilities: {', '.join(found_caps)}")
+                else:
+                    logging.info("No notable extended capabilities found")
+            else:
+                logging.warning(f"Failed to query capabilities: {typ}")
+            
+            # Query namespace information if supported
+            if hasattr(mail, 'namespace'):
+                try:
+                    typ, namespace_data = mail.namespace()
+                    if typ == 'OK' and namespace_data:
+                        logging.info(f"Namespace info: {namespace_data[0].decode('utf-8') if namespace_data[0] else 'None'}")
+                except Exception as e:
+                    logging.debug(f"Namespace query failed (not supported): {e}")
+            
+            # Query server ID if supported  
+            try:
+                typ, id_data = mail.send(b'ID NIL')
+                if typ == 'OK':
+                    # Read the response
+                    while True:
+                        typ, data = mail.response('ID')
+                        if typ != 'OK' or not data:
+                            break
+                        if data[0]:
+                            server_id = data[0].decode('utf-8')
+                            logging.info(f"Server ID: {server_id}")
+                            break
+            except Exception as e:
+                logging.debug(f"Server ID query failed (not supported): {e}")
+            
+            logging.info("=== End Server Capabilities ===")
+            
+        except Exception as e:
+            logging.error(f"Error querying server capabilities: {e!s}", exc_info=True)
+        finally:
+            if mail:
+                await self.close_imap_connection(mail)
+
     async def search_emails(self, criteria: SearchCriteria) -> List[Dict[str, str]]:
         """Search for emails matching the specified criteria.
 
