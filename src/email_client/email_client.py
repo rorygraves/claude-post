@@ -78,21 +78,25 @@ class SearchCriteria:
         start_date: Search start date in YYYY-MM-DD format (optional)
         end_date: Search end date in YYYY-MM-DD format (optional)
         keyword: Text to search for in subject/body (optional)
+        max_results: Maximum number of emails to return (default: 100)
+        start_from: Starting position for pagination (default: 0)
     """
     folder: Literal["inbox", "sent"] = "inbox"
     start_date: Optional[str] = None
     end_date: Optional[str] = None
     keyword: Optional[str] = None
+    max_results: int = 100
+    start_from: int = 0
 
     def __post_init__(self) -> None:
         """Automatically validate criteria after object creation."""
         self.validate()
 
     def validate(self) -> None:
-        """Validate date formats and ensure they follow YYYY-MM-DD pattern.
+        """Validate date formats and pagination parameters.
 
         Raises:
-            ValueError: If date strings don't match YYYY-MM-DD format
+            ValueError: If date strings don't match YYYY-MM-DD format or pagination params are invalid
         """
         # Validate start_date format if provided
         if self.start_date:
@@ -107,6 +111,14 @@ class SearchCriteria:
                 datetime.strptime(self.end_date, "%Y-%m-%d")
             except ValueError as e:
                 raise ValueError(f"Invalid end_date format: {self.end_date}. Expected YYYY-MM-DD") from e
+
+        # Validate pagination parameters
+        if self.max_results <= 0:
+            raise ValueError(f"max_results must be positive, got: {self.max_results}")
+        if self.max_results > 1000:
+            raise ValueError(f"max_results cannot exceed 1000, got: {self.max_results}")
+        if self.start_from < 0:
+            raise ValueError(f"start_from must be non-negative, got: {self.start_from}")
 
 
 @dataclass
@@ -333,7 +345,7 @@ class EmailClient:
             logging.info(f"Final search criteria: {search_criteria}")
 
             # Execute the search and fetch email summaries
-            email_list = await self._execute_search(mail, search_criteria)
+            email_list = await self._execute_search(mail, search_criteria, criteria)
             logging.info(f"Successfully fetched {len(email_list)} emails")
 
         except Exception as e:
@@ -855,17 +867,85 @@ class EmailClient:
 
         return search_criteria
 
-    async def _execute_search(self, mail: imaplib.IMAP4_SSL, search_criteria: str) -> List[Dict[str, str]]:
-        """Execute IMAP search and return formatted email summaries.
+    async def _search_with_pagination(self, mail: imaplib.IMAP4_SSL, search_criteria: str, criteria: SearchCriteria) -> List[bytes]:
+        """Execute IMAP search with pagination support using ESEARCH if available.
+        
+        Args:
+            mail: Active IMAP4_SSL connection
+            search_criteria: IMAP search criteria string 
+            criteria: SearchCriteria object with pagination parameters
+            
+        Returns:
+            List of message ID bytes, already paginated according to criteria
+        """
+        loop = asyncio.get_event_loop()
+        
+        # Check if server supports ESEARCH extension
+        try:
+            # Get server capabilities to check for ESEARCH support
+            typ, capability_data = mail.capability()
+            has_esearch = (typ == 'OK' and capability_data and 
+                          b'ESEARCH' in capability_data[0])
+            
+            if has_esearch and criteria.start_from > 0:
+                # Try to use ESEARCH with PARTIAL for server-side pagination
+                # Format: ESEARCH RETURN (PARTIAL start:count) search_criteria
+                start_pos = criteria.start_from + 1  # IMAP uses 1-based indexing
+                count = criteria.max_results
+                esearch_query = f'RETURN (PARTIAL {start_pos}:{count}) {search_criteria}'
+                
+                try:
+                    logging.debug(f"Attempting ESEARCH with query: {esearch_query}")
+                    # Use extended search command if available
+                    if hasattr(mail, '_simple_command'):
+                        typ, data = await loop.run_in_executor(None, 
+                            lambda: mail._simple_command('SEARCH', esearch_query))
+                        if typ == 'OK' and data:
+                            # Parse ESEARCH response
+                            response = data[0].decode() if isinstance(data[0], bytes) else str(data[0])
+                            if 'PARTIAL' in response:
+                                # Extract message IDs from ESEARCH response
+                                import re
+                                match = re.search(r'PARTIAL \(\d+:\d+ ([\d\s]+)\)', response)
+                                if match:
+                                    message_ids = [id_str.encode() for id_str in match.group(1).split()]
+                                    logging.info(f"ESEARCH returned {len(message_ids)} messages")
+                                    return message_ids
+                except Exception as e:
+                    logging.debug(f"ESEARCH failed, falling back to regular search: {e}")
+                    
+        except Exception as e:
+            logging.debug(f"Capability check failed: {e}")
+        
+        # Fallback to regular SEARCH with client-side pagination
+        logging.debug(f"Using regular SEARCH with client-side pagination")
+        _, messages = await loop.run_in_executor(None, lambda: mail.search(None, search_criteria))
+        
+        if not messages[0]:
+            return []
+            
+        all_message_ids = messages[0].split()
+        logging.info(f"Found {len(all_message_ids)} total messages, applying pagination")
+        
+        # Apply client-side pagination
+        start_idx = criteria.start_from
+        end_idx = start_idx + criteria.max_results
+        paginated_ids: List[bytes] = all_message_ids[start_idx:end_idx]
+        
+        logging.info(f"Returning {len(paginated_ids)} messages after pagination")
+        return paginated_ids
 
-        Performs an IMAP SEARCH command with the given criteria, fetches email headers
-        for matching messages (up to MAX_EMAILS limit) using efficient batch fetching,
-        and formats them into a standardized summary format for display.
+    async def _execute_search(self, mail: imaplib.IMAP4_SSL, search_criteria: str, criteria: SearchCriteria) -> List[Dict[str, str]]:
+        """Execute IMAP search with pagination support and return formatted email summaries.
+
+        Performs an IMAP SEARCH command with the given criteria, supports pagination
+        using either ESEARCH (if available) or regular SEARCH with client-side pagination.
+        Fetches email headers using efficient batch fetching.
 
         Args:
             mail: Active IMAP4_SSL connection with a folder already selected
-            search_criteria: IMAP search criteria string (e.g., 'SINCE "01-Jan-2024"',
-                           'SUBJECT "meeting"', or complex criteria with AND/OR operators)
+            search_criteria: IMAP search criteria string (e.g., 'SINCE "01-Jan-2024"')
+            criteria: SearchCriteria object containing pagination parameters
 
         Returns:
             List of email summary dictionaries, each containing:
@@ -875,37 +955,30 @@ class EmailClient:
             - 'subject': Email subject line (string) - "No Subject" if missing
 
             Returns empty list if no emails match the search criteria.
-            Limited to MAX_EMAILS (100) results for performance.
+            Limited by criteria.max_results for performance.
 
         Performance:
             Uses batch FETCH with comma-separated message IDs for efficiency,
             reducing network round-trips compared to individual fetch operations.
-
-        Note:
-            This method assumes the IMAP connection is already authenticated and
-            a folder has been selected. It fetches email headers only, not full content.
+            Supports ESEARCH for server-side pagination when available.
         """
         loop = asyncio.get_event_loop()
-
-        logging.debug(f"Executing IMAP search with criteria: {search_criteria}")
-        _, messages = await loop.run_in_executor(None, lambda: mail.search(None, search_criteria))
-        logging.debug(f"Search result: {messages}")
-
-        if not messages[0]:
+        
+        # Check if server supports ESEARCH for efficient pagination
+        message_ids = await self._search_with_pagination(mail, search_criteria, criteria)
+        
+        if not message_ids:
             logging.info("No messages found matching criteria")
             return []
 
-        message_ids = messages[0].split()
-        logging.info(f"Found {len(message_ids)} messages, fetching up to {MAX_EMAILS}")
+        logging.info(f"Found {len(message_ids)} messages for pagination range {criteria.start_from}-{criteria.start_from + criteria.max_results}")
 
-        limited_message_ids = message_ids[:MAX_EMAILS]
-
-        if not limited_message_ids:
+        if not message_ids:
             return []
 
         # Create comma-separated list of message IDs for batch fetch
-        message_set = b','.join(limited_message_ids).decode()
-        logging.debug(f"Batch fetching {len(limited_message_ids)} emails with message set: {message_set}")
+        message_set = b','.join(message_ids).decode()
+        logging.debug(f"Batch fetching {len(message_ids)} emails with message set: {message_set}")
 
         # Fetch all emails in a single IMAP command for efficiency
         _, msg_data_list = await loop.run_in_executor(None, lambda: mail.fetch(message_set, "(RFC822)"))

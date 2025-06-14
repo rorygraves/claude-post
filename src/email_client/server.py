@@ -133,6 +133,8 @@ async def _handle_search_emails(
             start_date=arguments.get("start_date"),
             end_date=arguments.get("end_date"),
             keyword=arguments.get("keyword"),
+            max_results=arguments.get("max_results", 100),
+            start_from=arguments.get("start_from", 0),
         )
 
         email_list = await email_client.search_emails(criteria)
@@ -144,7 +146,9 @@ async def _handle_search_emails(
         logging.info(f"Formatting {len(email_list)} emails for display")
 
         # Format the results as a table
-        result_text = "Found emails:\n\n"
+        start_from = criteria.start_from
+        max_results = criteria.max_results
+        result_text = f"Found emails (showing {len(email_list)} results starting from position {start_from}):\n\n"
         result_text += "ID | From | Date | Subject\n"
         result_text += "-" * 80 + "\n"
 
@@ -153,7 +157,9 @@ async def _handle_search_emails(
                 f"{email_item['id']} | {email_item['from']} | {email_item['date']} | {email_item['subject']}\n"
             )
 
-        result_text += "\nUse get-email-content with an email ID to view the full content of a specific email."
+        result_text += f"\nShowing results {start_from + 1}-{start_from + len(email_list)}. "
+        result_text += f"Use start_from={start_from + max_results} to get the next page.\n"
+        result_text += "Use get-email-content with an email ID to view the full content of a specific email."
 
         logging.info("Successfully returned search results")
         return [types.TextContent(type="text", text=result_text)]
@@ -385,7 +391,7 @@ async def handle_list_tools() -> List[types.Tool]:
     tools = [
         types.Tool(
             name="search-emails",
-            description="Search emails within a date range and/or with specific keywords",
+            description="Search emails within a date range and/or with specific keywords with pagination support",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -404,6 +410,19 @@ async def handle_list_tools() -> List[types.Tool]:
                     "folder": {
                         "type": "string",
                         "description": "Folder to search in (use 'list-folders' tool to see available folders, defaults to 'inbox')",
+                    },
+                    "max_results": {
+                        "type": "integer",
+                        "description": "Maximum number of emails to return (1-1000, defaults to 100)",
+                        "minimum": 1,
+                        "maximum": 1000,
+                        "default": 100,
+                    },
+                    "start_from": {
+                        "type": "integer", 
+                        "description": "Starting position for pagination (0-based index, defaults to 0)",
+                        "minimum": 0,
+                        "default": 0,
                     },
                 },
             },
