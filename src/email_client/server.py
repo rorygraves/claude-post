@@ -270,33 +270,48 @@ async def _handle_list_folders(
 async def _handle_move_email(
     arguments: Dict[str, Any],
 ) -> List[Union[types.TextContent, types.ImageContent, types.EmbeddedResource]]:
-    """Handle move-email tool to move emails between folders."""
-    email_id = arguments.get("email_id")
+    """Handle move-email tool to move one or more emails between folders."""
+    email_ids = arguments.get("email_ids")
     source_folder = arguments.get("source_folder", "inbox")
     destination_folder = arguments.get("destination_folder")
     
     # Validate required parameters
-    if not email_id:
-        return [types.TextContent(type="text", text="Email ID is required.")]
+    if not email_ids:
+        return [types.TextContent(type="text", text="Email IDs are required.")]
     
     if not destination_folder:
         return [types.TextContent(type="text", text="Destination folder is required.")]
     
+    # Handle both single string and array inputs for backward compatibility
+    if isinstance(email_ids, str):
+        ids_to_move = [email_ids]
+    elif isinstance(email_ids, list):
+        ids_to_move = email_ids
+    else:
+        return [types.TextContent(type="text", text="Email IDs must be a string or array of strings.")]
+    
+    if not ids_to_move:
+        return [types.TextContent(type="text", text="At least one email ID is required.")]
+    
     try:
-        await email_client.move_email(email_id, source_folder, destination_folder)
+        await email_client.move_email(ids_to_move, source_folder, destination_folder)
+        
+        count = len(ids_to_move)
+        email_word = "email" if count == 1 else "emails"
         
         result_text = (
-            f"Successfully moved email {email_id} from '{source_folder}' to '{destination_folder}'.\n"
-            f"The email is no longer in the source folder and can now be found in the destination folder."
+            f"Successfully moved {count} {email_word} from '{source_folder}' to '{destination_folder}'.\n"
+            f"The {email_word} {('is' if count == 1 else 'are')} no longer in the source folder and can now be found in the destination folder.\n"
+            f"Moved IDs: {', '.join(ids_to_move)}"
         )
         
-        logging.info(f"Successfully moved email {email_id} via MCP tool")
+        logging.info(f"Successfully moved {count} emails via MCP tool")
         return [types.TextContent(type="text", text=result_text)]
         
     except EmailDeletionError as e:
-        return [types.TextContent(type="text", text=f"Failed to move email: {e!s}")]
+        return [types.TextContent(type="text", text=f"Failed to move emails: {e!s}")]
     except Exception as e:
-        logging.error(f"Unexpected error in move email: {e!s}", exc_info=True)
+        logging.error(f"Unexpected error in move emails: {e!s}", exc_info=True)
         return [types.TextContent(type="text", text=f"Unexpected error: {e!s}")]
 
 
@@ -466,24 +481,27 @@ async def handle_list_tools() -> List[types.Tool]:
         tools.extend([
             types.Tool(
                 name="move-email",
-                description="Move an email from one folder to another",
+                description="Move one or more emails from one folder to another",
                 inputSchema={
                     "type": "object",
                     "properties": {
-                        "email_id": {
-                            "type": "string",
-                            "description": "The ID of the email to move",
+                        "email_ids": {
+                            "oneOf": [
+                                {"type": "string", "description": "Single email ID to move"},
+                                {"type": "array", "items": {"type": "string"}, "description": "Array of email IDs to move"}
+                            ],
+                            "description": "The ID(s) of the email(s) to move. Can be a single string or array of strings.",
                         },
                         "source_folder": {
                             "type": "string",
-                            "description": "Source folder containing the email (defaults to 'inbox')",
+                            "description": "Source folder containing the emails (defaults to 'inbox')",
                         },
                         "destination_folder": {
                             "type": "string",
-                            "description": "Destination folder to move the email to (use 'list-folders' to see options)",
+                            "description": "Destination folder to move the emails to (use 'list-folders' to see options)",
                         },
                     },
-                    "required": ["email_id", "destination_folder"],
+                    "required": ["email_ids", "destination_folder"],
                 },
             ),
             types.Tool(

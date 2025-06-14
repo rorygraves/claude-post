@@ -187,9 +187,9 @@ Additional tools: `move-email`, `delete-email`
 When `--enable-write-operations` is used, the server exposes these additional tools:
 
 #### `move-email`
-- **Description**: Move an email from one folder to another
+- **Description**: Move one or more emails from one folder to another
 - **Parameters**: 
-  - `email_id` (required): Email to move
+  - `email_ids` (required): Email ID(s) to move. Can be a single string or array of strings
   - `destination_folder` (required): Target folder
   - `source_folder` (optional): Source folder (defaults to 'inbox')
 
@@ -223,9 +223,10 @@ The integration test suite performs the following validations:
 6. **Move Email Test**: Tests moving emails between folders
 7. **Delete Functionality Test**: Validates delete email capabilities
 8. **Delete Multiple Emails Test**: Validates array-based delete functionality
-9. **Sent Folder Test**: Validates sent emails folder functionality
-10. **Move to Trash Test**: Moves test email to trash folder (safe cleanup)
-11. **Permanent Delete Test**: Tests permanent deletion functionality
+9. **Move Multiple Emails Test**: Validates array-based move functionality
+10. **Sent Folder Test**: Validates sent emails folder functionality
+11. **Move to Trash Test**: Moves test email to trash folder (safe cleanup)
+12. **Permanent Delete Test**: Tests permanent deletion functionality
 
 ### Test Features
 
@@ -266,7 +267,7 @@ The integration test suite performs the following validations:
 ✅ PASS: Permanent delete email
     Email was already moved to trash (expected)
 ...
-Results: 12/12 tests passed
+Results: 13/13 tests passed
 🎉 ALL TESTS PASSED!
 ```
 

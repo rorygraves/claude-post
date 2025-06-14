@@ -605,18 +605,31 @@ class EmailClient:
             if mail:
                 await self.close_imap_connection(mail)
 
-    async def move_email(self, email_id: str, source_folder: str, destination_folder: str) -> None:
-        """Move an email from one folder to another.
+    async def move_email(self, email_ids: Union[str, List[str]], source_folder: str, destination_folder: str) -> None:
+        """Move one or more emails from one folder to another.
 
         Args:
-            email_id: The ID of the email to move
-            source_folder: The folder containing the email (e.g., 'inbox', 'INBOX')
+            email_ids: The ID(s) of the email(s) to move. Can be a single string or list of strings.
+            source_folder: The folder containing the email(s) (e.g., 'inbox', 'INBOX')
             destination_folder: The destination folder (e.g., 'Archive', '[Gmail]/Important')
 
         Raises:
             EmailDeletionError: If the move operation fails (reusing existing exception)
             EmailConnectionError: If IMAP connection fails
         """
+        # Convert single email ID to list for uniform processing
+        if isinstance(email_ids, str):
+            ids_to_process = [email_ids]
+        else:
+            ids_to_process = email_ids
+            
+        if not ids_to_process:
+            raise EmailDeletionError("No email IDs provided for moving")
+        
+        await self._move_emails_batch(ids_to_process, source_folder, destination_folder)
+
+    async def _move_emails_batch(self, email_ids: List[str], source_folder: str, destination_folder: str) -> None:
+        """Move multiple emails in a single IMAP connection."""
         mail = None
         try:
             mail = await self.connect_imap()
@@ -627,29 +640,30 @@ class EmailClient:
             # Validate destination folder by checking if it exists
             await self._validate_destination_folder(mail, destination_folder)
             
-            # Move email using COPY + STORE + EXPUNGE
-            logging.info(f"Moving email {email_id} from '{source_folder}' to '{destination_folder}'")
-            loop = asyncio.get_event_loop()
-            
             # Ensure destination folder is properly quoted
             quoted_dest = destination_folder
             if not (destination_folder.startswith('"') and destination_folder.endswith('"')):
                 quoted_dest = f'"{destination_folder}"'
             
-            # Copy email to destination folder
-            await loop.run_in_executor(None, lambda: mail.copy(email_id, quoted_dest))
+            logging.info(f"Moving {len(email_ids)} emails from '{source_folder}' to '{destination_folder}'")
+            loop = asyncio.get_event_loop()
             
-            # Mark original email as deleted
-            await loop.run_in_executor(None, lambda: mail.store(email_id, '+FLAGS', '\\Deleted'))
+            # Process all emails: copy to destination, mark as deleted
+            for email_id in email_ids:
+                logging.debug(f"Moving email {email_id}")
+                # Copy email to destination folder
+                await loop.run_in_executor(None, lambda id=email_id: mail.copy(id, quoted_dest))
+                # Mark original email as deleted
+                await loop.run_in_executor(None, lambda id=email_id: mail.store(id, '+FLAGS', '\\Deleted'))
             
-            # Expunge to remove from source folder
+            # Single expunge operation to remove all moved emails from source folder
             await loop.run_in_executor(None, mail.expunge)
 
-            logging.info(f"Successfully moved email {email_id} from '{source_folder}' to '{destination_folder}'")
+            logging.info(f"Successfully moved {len(email_ids)} emails from '{source_folder}' to '{destination_folder}'")
 
         except Exception as e:
-            logging.error(f"Error moving email: {e!s}", exc_info=True)
-            raise EmailDeletionError(f"Failed to move email {email_id} from '{source_folder}' to '{destination_folder}': {e!s}") from e
+            logging.error(f"Error moving emails: {e!s}", exc_info=True)
+            raise EmailDeletionError(f"Failed to move emails {email_ids} from '{source_folder}' to '{destination_folder}': {e!s}") from e
         finally:
             if mail:
                 await self.close_imap_connection(mail)
