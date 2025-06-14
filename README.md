@@ -174,7 +174,7 @@ Available tools: `search-emails`, `get-email-content`, `count-daily-emails`, `li
 ```bash
 python -m email_client --enable-write-operations
 ```
-Additional tools: `move-email`, `delete-email`
+Additional tools: `move-emails`, `delete-emails`
 
 ### Security Features
 - **Default safety**: Write operations disabled by default
@@ -186,17 +186,17 @@ Additional tools: `move-email`, `delete-email`
 
 When `--enable-write-operations` is used, the server exposes these additional tools:
 
-#### `move-email`
+#### `move-emails`
 - **Description**: Move one or more emails from one folder to another
 - **Parameters**: 
-  - `email_ids` (required): Email ID(s) to move. Can be a single string or array of strings
+  - `email_ids` (required): Array of email IDs to move
   - `destination_folder` (required): Target folder
   - `source_folder` (optional): Source folder (defaults to 'inbox')
 
-#### `delete-email`
+#### `delete-emails`
 - **Description**: Delete one or more emails (move to trash by default, or permanently)
 - **Parameters**:
-  - `email_ids` (required): Email ID(s) to delete. Can be a single string or array of strings
+  - `email_ids` (required): Array of email IDs to delete
   - `folder` (optional): Source folder (defaults to 'inbox')
   - `permanent` (optional): If true, permanently delete; if false, move to trash
 

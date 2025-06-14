@@ -319,7 +319,7 @@ async def _handle_move_email(
 async def _handle_delete_email(
     arguments: Dict[str, Any],
 ) -> List[Union[types.TextContent, types.ImageContent, types.EmbeddedResource]]:
-    """Handle delete-email tool to delete one or more emails with optional permanent flag."""
+    """Handle delete-emails tool to delete one or more emails with optional permanent flag."""
     email_ids = arguments.get("email_ids")
     folder = arguments.get("folder", "inbox")
     permanent = arguments.get("permanent", False)
@@ -379,7 +379,7 @@ async def handle_list_tools() -> List[types.Tool]:
     """
     List available tools.
     Each tool specifies its arguments using JSON Schema validation.
-    Write operations (move-email, delete-email) are only included if enabled via --enable-write-operations flag.
+    Write operations (move-emails, delete-emails) are only included if enabled via --enable-write-operations flag.
     """
     # Core read-only tools that are always available
     tools = [
@@ -482,7 +482,7 @@ async def handle_list_tools() -> List[types.Tool]:
     if WRITE_OPERATIONS_ENABLED:
         tools.extend([
             types.Tool(
-                name="move-email",
+                name="move-emails",
                 description="Move one or more emails from one folder to another. Use an array of email IDs, even for single emails.",
                 inputSchema={
                     "type": "object",
@@ -505,7 +505,7 @@ async def handle_list_tools() -> List[types.Tool]:
                 },
             ),
             types.Tool(
-                name="delete-email",
+                name="delete-emails",
                 description="Delete one or more emails (move to trash by default, or permanently with 'permanent' flag). Use an array of email IDs, even for single emails.",
                 inputSchema={
                     "type": "object",
@@ -554,11 +554,11 @@ async def handle_call_tool(
             return await _handle_count_daily_emails(arguments)
         elif name == "list-folders":
             return await _handle_list_folders(arguments)
-        elif name == "move-email":
+        elif name == "move-emails":
             if not WRITE_OPERATIONS_ENABLED:
                 return [types.TextContent(type="text", text="Move operations are disabled. Use --enable-write-operations flag to enable.")]
             return await _handle_move_email(arguments)
-        elif name == "delete-email":
+        elif name == "delete-emails":
             if not WRITE_OPERATIONS_ENABLED:
                 return [types.TextContent(type="text", text="Delete operations are disabled. Use --enable-write-operations flag to enable.")]
             return await _handle_delete_email(arguments)
@@ -576,7 +576,7 @@ async def main(enable_write_operations: bool = False) -> None:
     The server communicates with Claude Desktop via stdin/stdout streams.
 
     Args:
-        enable_write_operations: If True, enables move-email and delete-email tools
+        enable_write_operations: If True, enables move-emails and delete-emails tools
 
     This function:
     1. Creates stdio communication streams
