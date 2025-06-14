@@ -4,7 +4,6 @@ This module provides the Model Context Protocol server that exposes
 email functionality through standardized tools.
 """
 
-import argparse
 import asyncio
 import logging
 from datetime import datetime
@@ -576,42 +575,3 @@ async def main(enable_write_operations: bool = False) -> None:
         )
 
 
-if __name__ == "__main__":
-    """Entry point when running as a standalone script.
-
-    Handles command line argument parsing and top-level exceptions.
-    This is typically called by Claude Desktop when the MCP server starts.
-    """
-    # Parse command line arguments
-    parser = argparse.ArgumentParser(
-        description="EmailClient MCP Server - Email management through Claude",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Examples:
-  python -m email_client                           # Read-only mode (default)
-  python -m email_client --enable-write-operations # Enable move/delete operations
-
-Security:
-  By default, only read operations (search, read, list) are enabled.
-  Use --enable-write-operations to enable move-email and delete-email tools.
-        """
-    )
-    
-    parser.add_argument(
-        "--enable-write-operations",
-        action="store_true",
-        help="Enable write operations (move-email, delete-email). "
-             "By default, only read operations are available for safety."
-    )
-    
-    args = parser.parse_args()
-    
-    try:
-        # Run the main server function with parsed arguments
-        asyncio.run(main(enable_write_operations=args.enable_write_operations))
-    except KeyboardInterrupt:
-        # Handle graceful shutdown on Ctrl+C
-        logging.info("Server stopped by user")
-    except Exception as e:
-        # Log any unexpected crashes for debugging
-        logging.error(f"Server crashed: {e!s}", exc_info=True)
