@@ -1,6 +1,7 @@
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Literal, Optional, Tuple, Union, cast
 import asyncio
 from datetime import datetime, timedelta
+from dataclasses import dataclass
 import email
 import imaplib
 import smtplib
@@ -41,60 +42,260 @@ logging.info(f"Password configured: {'Yes' if EMAIL_PASSWORD != 'your-app-specif
 SEARCH_TIMEOUT = 60  # seconds
 MAX_EMAILS = 100
 
+
+# Custom Exceptions
+class EmailConnectionError(Exception):
+    """Raised when email connection fails."""
+
+    pass
+
+
+class EmailSearchError(Exception):
+    """Raised when email search fails."""
+
+    pass
+
+
+class EmailSendError(Exception):
+    """Raised when email sending fails."""
+
+    pass
+
+
+# Data Classes for Validation
+@dataclass
+class SearchCriteria:
+    folder: Literal["inbox", "sent"] = "inbox"
+    start_date: Optional[str] = None
+    end_date: Optional[str] = None
+    keyword: Optional[str] = None
+
+    def __post_init__(self) -> None:
+        self.validate()
+
+    def validate(self) -> None:
+        """Validate search criteria."""
+        if self.start_date:
+            try:
+                datetime.strptime(self.start_date, "%Y-%m-%d")
+            except ValueError:
+                raise ValueError(f"Invalid start_date format: {self.start_date}. Expected YYYY-MM-DD")
+
+        if self.end_date:
+            try:
+                datetime.strptime(self.end_date, "%Y-%m-%d")
+            except ValueError:
+                raise ValueError(f"Invalid end_date format: {self.end_date}. Expected YYYY-MM-DD")
+
+
+@dataclass
+class EmailMessage:
+    to_addresses: List[str]
+    subject: str
+    content: str
+    cc_addresses: Optional[List[str]] = None
+
+    def __post_init__(self) -> None:
+        self.validate()
+
+    def validate(self) -> None:
+        """Validate email message."""
+        if not self.to_addresses:
+            raise ValueError("At least one recipient email address is required")
+        if not self.subject.strip():
+            raise ValueError("Email subject cannot be empty")
+        if not self.content.strip():
+            raise ValueError("Email content cannot be empty")
+
+
 server = Server("email")
 
 
-def format_email_summary(msg_data: Tuple[Any, ...]) -> Dict[str, str]:
-    """Format an email message into a summary dict with basic information."""
-    email_body = email.message_from_bytes(msg_data[0][1])
+class EmailClient:
+    """Manages email operations and connections."""
 
-    return {
-        "id": msg_data[0][0].split()[0].decode(),  # Get the email ID
-        "from": email_body.get("From", "Unknown"),
-        "date": email_body.get("Date", "Unknown"),
-        "subject": email_body.get("Subject", "No Subject"),
-    }
+    def __init__(self) -> None:
+        self.email_address = EMAIL_ADDRESS
+        self.email_password = EMAIL_PASSWORD
+        self.imap_server = IMAP_SERVER
+        self.smtp_server = SMTP_SERVER
+        self.smtp_port = SMTP_PORT
 
+    async def connect_imap(self) -> imaplib.IMAP4_SSL:
+        """Create and return authenticated IMAP connection."""
+        try:
+            logging.info(f"Connecting to IMAP server: {self.imap_server}")
+            mail = imaplib.IMAP4_SSL(self.imap_server)
+            logging.info("IMAP SSL connection established")
 
-def format_email_content(msg_data: Tuple[Any, ...]) -> Dict[str, str]:
-    """Format an email message into a dict with full content."""
-    email_body = email.message_from_bytes(msg_data[0][1])
+            mail.login(self.email_address, self.email_password)
+            logging.info("IMAP login successful")
+            return mail
+        except Exception as e:
+            logging.error(f"IMAP connection/login failed: {str(e)}")
+            raise EmailConnectionError(f"Failed to connect to IMAP server: {str(e)}")
 
-    # Extract body content
-    body = ""
-    if email_body.is_multipart():
-        # Handle multipart messages
-        for part in email_body.walk():
-            if part.get_content_type() == "text/plain":
-                payload = part.get_payload(decode=True)
-                if isinstance(payload, bytes):
-                    body = payload.decode()
-                break
-            elif part.get_content_type() == "text/html":
-                # If no plain text found, use HTML content
-                if not body:
-                    payload = part.get_payload(decode=True)
-                    if isinstance(payload, bytes):
-                        body = payload.decode()
-    else:
-        # Handle non-multipart messages
-        payload = email_body.get_payload(decode=True)
-        if isinstance(payload, bytes):
-            body = payload.decode()
+    async def close_imap_connection(self, mail: imaplib.IMAP4_SSL) -> None:
+        """Safely close IMAP connection."""
+        try:
+            mail.close()
+            mail.logout()
+            logging.info("IMAP connection closed")
+        except Exception as e:
+            logging.warning(f"Error closing IMAP connection: {str(e)}")
 
-    return {
-        "from": email_body.get("From", "Unknown"),
-        "to": email_body.get("To", "Unknown"),
-        "date": email_body.get("Date", "Unknown"),
-        "subject": email_body.get("Subject", "No Subject"),
-        "content": body,
-    }
+    async def search_emails(self, criteria: SearchCriteria) -> List[Dict[str, str]]:
+        """Search emails with specified criteria."""
+        mail = None
+        try:
+            mail = await self.connect_imap()
 
+            # Select folder
+            logging.info(f"Selecting folder: {criteria.folder}")
+            if criteria.folder == "sent":
+                result = mail.select('"[Gmail]/Sent Mail"')
+                logging.info(f"Selected sent folder, result: {result}")
+            else:
+                result = mail.select("inbox")
+                logging.info(f"Selected inbox, result: {result}")
 
-async def search_emails_async(mail: imaplib.IMAP4_SSL, search_criteria: str) -> List[Dict[str, str]]:
-    """Asynchronously search emails with timeout."""
-    loop = asyncio.get_event_loop()
-    try:
+            # Build search criteria
+            search_criteria = await self._build_search_criteria(criteria)
+            logging.info(f"Final search criteria: {search_criteria}")
+
+            # Execute search
+            email_list = await self._execute_search(mail, search_criteria)
+            logging.info(f"Successfully fetched {len(email_list)} emails")
+            return email_list
+
+        except Exception as e:
+            logging.error(f"Error in search_emails: {str(e)}", exc_info=True)
+            raise EmailSearchError(f"Email search failed: {str(e)}")
+        finally:
+            if mail:
+                await self.close_imap_connection(mail)
+
+    async def get_email_content(self, email_id: str) -> Dict[str, str]:
+        """Get full content of a specific email."""
+        mail = None
+        try:
+            mail = await self.connect_imap()
+            mail.select("inbox")
+
+            loop = asyncio.get_event_loop()
+            _, msg_data = await loop.run_in_executor(None, lambda: mail.fetch(email_id, "(RFC822)"))
+
+            if msg_data and msg_data[0]:
+                return self._format_email_content((msg_data[0],))
+            else:
+                raise EmailSearchError("No email data returned")
+
+        except Exception as e:
+            logging.error(f"Error fetching email content: {str(e)}", exc_info=True)
+            raise EmailSearchError(f"Failed to get email content: {str(e)}")
+        finally:
+            if mail:
+                await self.close_imap_connection(mail)
+
+    async def send_email(self, message: EmailMessage) -> None:
+        """Send email with specified parameters."""
+        try:
+            # Create message
+            msg = MIMEMultipart()
+            msg["From"] = self.email_address
+            msg["To"] = ", ".join(message.to_addresses)
+            if message.cc_addresses:
+                msg["Cc"] = ", ".join(message.cc_addresses)
+            msg["Subject"] = message.subject
+
+            # Add body
+            msg.attach(MIMEText(message.content, "plain", "utf-8"))
+
+            # Send email
+            await self._send_via_smtp(msg, message.to_addresses, message.cc_addresses)
+            logging.info("Email sent successfully")
+
+        except Exception as e:
+            logging.error(f"Error in send_email: {str(e)}", exc_info=True)
+            raise EmailSendError(f"Failed to send email: {str(e)}")
+
+    async def count_daily_emails(self, start_date: str, end_date: str) -> Dict[str, int]:
+        """Count emails for each day in a date range."""
+        mail = None
+        try:
+            mail = await self.connect_imap()
+            mail.select("inbox")
+
+            start_dt = datetime.strptime(start_date, "%Y-%m-%d")
+            end_dt = datetime.strptime(end_date, "%Y-%m-%d")
+
+            daily_counts = {}
+            current_date = start_dt
+
+            while current_date <= end_dt:
+                date_str = current_date.strftime("%d-%b-%Y")
+                search_criteria = f'(ON "{date_str}")'
+
+                try:
+                    async with asyncio.timeout(SEARCH_TIMEOUT):
+                        count = await self._count_emails(mail, search_criteria)
+                        daily_counts[current_date.strftime("%Y-%m-%d")] = count
+                except asyncio.TimeoutError:
+                    daily_counts[current_date.strftime("%Y-%m-%d")] = -1  # Indicate timeout
+
+                current_date += timedelta(days=1)
+
+            return daily_counts
+
+        except Exception as e:
+            logging.error(f"Error in count_daily_emails: {str(e)}", exc_info=True)
+            raise EmailSearchError(f"Failed to count emails: {str(e)}")
+        finally:
+            if mail:
+                await self.close_imap_connection(mail)
+
+    async def _build_search_criteria(self, criteria: SearchCriteria) -> str:
+        """Build IMAP search criteria from SearchCriteria object."""
+        # Set default dates if not provided
+        if not criteria.start_date:
+            start_date_dt = datetime.now() - timedelta(days=7)
+            logging.info(f"No start_date provided, using default: {start_date_dt.strftime('%Y-%m-%d')}")
+        else:
+            start_date_dt = datetime.strptime(criteria.start_date, "%Y-%m-%d")
+            logging.info(f"Parsed start_date: {criteria.start_date}")
+
+        if not criteria.end_date:
+            end_date_dt = datetime.now()
+            logging.info(f"No end_date provided, using today: {end_date_dt.strftime('%Y-%m-%d')}")
+        else:
+            end_date_dt = datetime.strptime(criteria.end_date, "%Y-%m-%d")
+            logging.info(f"Parsed end_date: {criteria.end_date}")
+
+        # Format dates for IMAP search
+        imap_start_date = start_date_dt.strftime("%d-%b-%Y")
+        imap_end_date = end_date_dt.strftime("%d-%b-%Y")
+        logging.info(f"IMAP formatted dates - start: {imap_start_date}, end: {imap_end_date}")
+
+        # Build search criteria
+        if start_date_dt.date() == end_date_dt.date():
+            search_criteria = f'ON "{imap_start_date}"'
+            logging.info(f"Single day search: {search_criteria}")
+        else:
+            imap_next_day_after_end = (end_date_dt + timedelta(days=1)).strftime("%d-%b-%Y")
+            search_criteria = f'SINCE "{imap_start_date}" BEFORE "{imap_next_day_after_end}"'
+            logging.info(f"Date range search: {search_criteria}")
+
+        if criteria.keyword:
+            keyword_criteria = f'(OR SUBJECT "{criteria.keyword}" BODY "{criteria.keyword}")'
+            search_criteria = f"({keyword_criteria} {search_criteria})"
+            logging.info(f"Added keyword search, final criteria: {search_criteria}")
+
+        return search_criteria
+
+    async def _execute_search(self, mail: imaplib.IMAP4_SSL, search_criteria: str) -> List[Dict[str, str]]:
+        """Execute IMAP search and return formatted results."""
+        loop = asyncio.get_event_loop()
+
         logging.debug(f"Executing IMAP search with criteria: {search_criteria}")
         _, messages = await loop.run_in_executor(None, lambda: mail.search(None, search_criteria))
         logging.debug(f"Search result: {messages}")
@@ -107,7 +308,7 @@ async def search_emails_async(mail: imaplib.IMAP4_SSL, search_criteria: str) -> 
         logging.info(f"Found {len(message_ids)} messages, fetching up to {MAX_EMAILS}")
 
         email_list = []
-        for i, num in enumerate(message_ids[:MAX_EMAILS]):  # Limit to MAX_EMAILS
+        for i, num in enumerate(message_ids[:MAX_EMAILS]):
             logging.debug(f"Fetching email {i+1}/{min(len(message_ids), MAX_EMAILS)}, ID: {num}")
 
             def fetch_email() -> Any:
@@ -115,86 +316,243 @@ async def search_emails_async(mail: imaplib.IMAP4_SSL, search_criteria: str) -> 
 
             _, msg_data = await loop.run_in_executor(None, fetch_email)
             if msg_data and msg_data[0]:
-                email_list.append(format_email_summary((msg_data[0],)))
+                email_list.append(self._format_email_summary((msg_data[0],)))
 
-        logging.info(f"Successfully fetched {len(email_list)} emails")
         return email_list
-    except Exception as e:
-        logging.error(f"Error in search_emails_async: {str(e)}", exc_info=True)
-        raise Exception(f"Error searching emails: {str(e)}")
 
+    async def _send_via_smtp(
+        self, msg: MIMEMultipart, to_addresses: List[str], cc_addresses: Optional[List[str]]
+    ) -> None:
+        """Send email via SMTP."""
 
-async def get_email_content_async(mail: imaplib.IMAP4_SSL, email_id: str) -> Dict[str, str]:
-    """Asynchronously get full content of a specific email."""
-    loop = asyncio.get_event_loop()
-    try:
-        _, msg_data = await loop.run_in_executor(None, lambda: mail.fetch(email_id, "(RFC822)"))
-        if msg_data and msg_data[0]:
-            return format_email_content((msg_data[0],))
-        else:
-            raise Exception("No email data returned")
-    except Exception as e:
-        raise Exception(f"Error fetching email content: {str(e)}")
-
-
-async def count_emails_async(mail: imaplib.IMAP4_SSL, search_criteria: str) -> int:
-    """Asynchronously count emails matching the search criteria."""
-    loop = asyncio.get_event_loop()
-    try:
-        _, messages = await loop.run_in_executor(None, lambda: mail.search(None, search_criteria))
-        return len(messages[0].split()) if messages[0] else 0
-    except Exception as e:
-        raise Exception(f"Error counting emails: {str(e)}")
-
-
-async def send_email_async(
-    to_addresses: List[str], subject: str, content: str, cc_addresses: Optional[List[str]] = None
-) -> None:
-    """Asynchronously send an email."""
-    try:
-        # Create message
-        msg = MIMEMultipart()
-        msg["From"] = EMAIL_ADDRESS
-        msg["To"] = ", ".join(to_addresses)
-        if cc_addresses:
-            msg["Cc"] = ", ".join(cc_addresses)
-        msg["Subject"] = subject
-
-        # Add body
-        msg.attach(MIMEText(content, "plain", "utf-8"))
-
-        # Connect to SMTP server and send email
         def send_sync() -> None:
-            with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as smtp_server:
-                smtp_server.set_debuglevel(1)  # Enable debug output
-                logging.debug(f"Connecting to {SMTP_SERVER}:{SMTP_PORT}")
+            with smtplib.SMTP(self.smtp_server, self.smtp_port) as smtp_server:
+                smtp_server.set_debuglevel(1)
+                logging.debug(f"Connecting to {self.smtp_server}:{self.smtp_port}")
 
-                # Start TLS
-                logging.debug("Starting TLS")
                 smtp_server.starttls()
+                logging.debug("Starting TLS")
 
-                # Login
-                logging.debug(f"Logging in as {EMAIL_ADDRESS}")
-                smtp_server.login(EMAIL_ADDRESS, EMAIL_PASSWORD)
+                smtp_server.login(self.email_address, self.email_password)
+                logging.debug(f"Logging in as {self.email_address}")
 
-                # Send email
                 all_recipients = to_addresses + (cc_addresses or [])
                 logging.debug(f"Sending email to: {all_recipients}")
-                result = smtp_server.send_message(msg, EMAIL_ADDRESS, all_recipients)
+                result = smtp_server.send_message(msg, self.email_address, all_recipients)
 
                 if result:
-                    # send_message returns a dict of failed recipients
-                    raise Exception(f"Failed to send to some recipients: {result}")
+                    raise EmailSendError(f"Failed to send to some recipients: {result}")
 
-                logging.debug("Email sent successfully")
-
-        # Run the synchronous send function in the executor
         loop = asyncio.get_event_loop()
         await loop.run_in_executor(None, send_sync)
 
-    except Exception as e:
-        logging.error(f"Error in send_email_async: {str(e)}")
-        raise
+    async def _count_emails(self, mail: imaplib.IMAP4_SSL, search_criteria: str) -> int:
+        """Count emails matching search criteria."""
+        loop = asyncio.get_event_loop()
+        _, messages = await loop.run_in_executor(None, lambda: mail.search(None, search_criteria))
+        return len(messages[0].split()) if messages[0] else 0
+
+    def _format_email_summary(self, msg_data: Tuple[Any, ...]) -> Dict[str, str]:
+        """Format an email message into a summary dict with basic information."""
+        email_body = email.message_from_bytes(msg_data[0][1])
+
+        return {
+            "id": msg_data[0][0].split()[0].decode(),
+            "from": email_body.get("From", "Unknown"),
+            "date": email_body.get("Date", "Unknown"),
+            "subject": email_body.get("Subject", "No Subject"),
+        }
+
+    def _format_email_content(self, msg_data: Tuple[Any, ...]) -> Dict[str, str]:
+        """Format an email message into a dict with full content."""
+        email_body = email.message_from_bytes(msg_data[0][1])
+
+        # Extract body content
+        body = ""
+        if email_body.is_multipart():
+            for part in email_body.walk():
+                if part.get_content_type() == "text/plain":
+                    payload = part.get_payload(decode=True)
+                    if isinstance(payload, bytes):
+                        body = payload.decode()
+                    break
+                elif part.get_content_type() == "text/html":
+                    if not body:
+                        payload = part.get_payload(decode=True)
+                        if isinstance(payload, bytes):
+                            body = payload.decode()
+        else:
+            payload = email_body.get_payload(decode=True)
+            if isinstance(payload, bytes):
+                body = payload.decode()
+
+        return {
+            "from": email_body.get("From", "Unknown"),
+            "to": email_body.get("To", "Unknown"),
+            "date": email_body.get("Date", "Unknown"),
+            "subject": email_body.get("Subject", "No Subject"),
+            "content": body,
+        }
+
+
+# Create global email client instance
+email_client = EmailClient()
+
+
+# Tool Handler Functions
+async def _handle_send_email(
+    arguments: Dict[str, Any],
+) -> List[Union[types.TextContent, types.ImageContent, types.EmbeddedResource]]:
+    """Handle send-email tool with proper validation."""
+    try:
+        message = EmailMessage(
+            to_addresses=arguments.get("to", []),
+            subject=arguments.get("subject", ""),
+            content=arguments.get("content", ""),
+            cc_addresses=arguments.get("cc", []),
+        )
+
+        logging.info("Attempting to send email")
+        logging.info(f"To: {message.to_addresses}")
+        logging.info(f"Subject: {message.subject}")
+        logging.info(f"CC: {message.cc_addresses}")
+
+        async with asyncio.timeout(SEARCH_TIMEOUT):
+            await email_client.send_email(message)
+            return [
+                types.TextContent(
+                    type="text", text="Email sent successfully! Check email_client.log for detailed logs."
+                )
+            ]
+
+    except ValueError as e:
+        return [types.TextContent(type="text", text=f"Invalid input: {str(e)}")]
+    except asyncio.TimeoutError:
+        logging.error("Operation timed out while sending email")
+        return [types.TextContent(type="text", text="Operation timed out while sending email.")]
+    except EmailSendError as e:
+        return [
+            types.TextContent(
+                type="text",
+                text=f"Failed to send email: {str(e)}\n\nPlease check:\n1. Email and password are correct in .env\n2. SMTP settings are correct\n3. Less secure app access is enabled (for Gmail)\n4. Using App Password if 2FA is enabled",
+            )
+        ]
+
+
+async def _handle_search_emails(
+    arguments: Dict[str, Any],
+) -> List[Union[types.TextContent, types.ImageContent, types.EmbeddedResource]]:
+    """Handle search-emails tool with proper validation."""
+    try:
+        folder = arguments.get("folder", "inbox")
+        # Validate folder value
+        if folder not in ["inbox", "sent"]:
+            folder = "inbox"
+
+        criteria = SearchCriteria(
+            folder=cast(Literal["inbox", "sent"], folder),
+            start_date=arguments.get("start_date"),
+            end_date=arguments.get("end_date"),
+            keyword=arguments.get("keyword"),
+        )
+
+        email_list = await email_client.search_emails(criteria)
+
+        if not email_list:
+            logging.info("No emails found matching the criteria")
+            return [types.TextContent(type="text", text="No emails found matching the criteria.")]
+
+        logging.info(f"Formatting {len(email_list)} emails for display")
+
+        # Format the results as a table
+        result_text = "Found emails:\n\n"
+        result_text += "ID | From | Date | Subject\n"
+        result_text += "-" * 80 + "\n"
+
+        for email_item in email_list:
+            result_text += (
+                f"{email_item['id']} | {email_item['from']} | {email_item['date']} | {email_item['subject']}\n"
+            )
+
+        result_text += "\nUse get-email-content with an email ID to view the full content of a specific email."
+
+        logging.info("Successfully returned search results")
+        return [types.TextContent(type="text", text=result_text)]
+
+    except ValueError as e:
+        return [types.TextContent(type="text", text=f"Invalid input: {str(e)}")]
+    except asyncio.TimeoutError:
+        logging.error("Search operation timed out")
+        return [
+            types.TextContent(
+                type="text", text="Search operation timed out. Please try with a more specific search criteria."
+            )
+        ]
+    except EmailSearchError as e:
+        return [types.TextContent(type="text", text=f"Search failed: {str(e)}")]
+
+
+async def _handle_get_email_content(
+    arguments: Dict[str, Any],
+) -> List[Union[types.TextContent, types.ImageContent, types.EmbeddedResource]]:
+    """Handle get-email-content tool with proper validation."""
+    email_id = arguments.get("email_id")
+    if not email_id:
+        return [types.TextContent(type="text", text="Email ID is required.")]
+
+    try:
+        async with asyncio.timeout(SEARCH_TIMEOUT):
+            email_content = await email_client.get_email_content(email_id)
+
+        result_text = (
+            f"From: {email_content['from']}\n"
+            f"To: {email_content['to']}\n"
+            f"Date: {email_content['date']}\n"
+            f"Subject: {email_content['subject']}\n"
+            f"\nContent:\n{email_content['content']}"
+        )
+
+        return [types.TextContent(type="text", text=result_text)]
+
+    except asyncio.TimeoutError:
+        return [types.TextContent(type="text", text="Operation timed out while fetching email content.")]
+    except EmailSearchError as e:
+        return [types.TextContent(type="text", text=f"Failed to get email content: {str(e)}")]
+
+
+async def _handle_count_daily_emails(
+    arguments: Dict[str, Any],
+) -> List[Union[types.TextContent, types.ImageContent, types.EmbeddedResource]]:
+    """Handle count-daily-emails tool with proper validation."""
+    start_date = arguments.get("start_date")
+    end_date = arguments.get("end_date")
+
+    if not start_date or not end_date:
+        return [types.TextContent(type="text", text="Both start_date and end_date are required.")]
+
+    try:
+        # Validate date formats
+        datetime.strptime(start_date, "%Y-%m-%d")
+        datetime.strptime(end_date, "%Y-%m-%d")
+
+        daily_counts = await email_client.count_daily_emails(start_date, end_date)
+
+        result_text = "Daily email counts:\n\n"
+        result_text += "Date | Count\n"
+        result_text += "-" * 30 + "\n"
+
+        for date_str, count in daily_counts.items():
+            if count == -1:
+                result_text += f"{date_str} | Timeout\n"
+            else:
+                result_text += f"{date_str} | {count}\n"
+
+        return [types.TextContent(type="text", text=result_text)]
+
+    except ValueError as e:
+        return [types.TextContent(type="text", text=f"Invalid date format: {str(e)}")]
+    except EmailSearchError as e:
+        return [types.TextContent(type="text", text=f"Failed to count emails: {str(e)}")]
 
 
 @server.list_tools()  # type: ignore
@@ -297,226 +655,27 @@ async def handle_list_tools() -> List[types.Tool]:
 async def handle_call_tool(
     name: str, arguments: Optional[Dict[str, Any]]
 ) -> List[Union[types.TextContent, types.ImageContent, types.EmbeddedResource]]:
-    """
-    Handle tool execution requests.
-    Tools can search emails and return results.
-    """
+    """Handle tool execution requests using focused tool handlers."""
     if not arguments:
         arguments = {}
 
     logging.info(f"=== Tool Call: {name} ===")
     logging.info(f"Arguments: {arguments}")
 
-    mail: Optional[imaplib.IMAP4_SSL] = None
-
     try:
         if name == "send-email":
-            to_addresses = arguments.get("to", [])
-            subject = arguments.get("subject", "")
-            content = arguments.get("content", "")
-            cc_addresses = arguments.get("cc", [])
-
-            if not to_addresses:
-                return [types.TextContent(type="text", text="At least one recipient email address is required.")]
-
-            try:
-                logging.info("Attempting to send email")
-                logging.info(f"To: {to_addresses}")
-                logging.info(f"Subject: {subject}")
-                logging.info(f"CC: {cc_addresses}")
-
-                async with asyncio.timeout(SEARCH_TIMEOUT):
-                    await send_email_async(to_addresses, subject, content, cc_addresses)
-                    return [
-                        types.TextContent(
-                            type="text", text="Email sent successfully! Check email_client.log for detailed logs."
-                        )
-                    ]
-            except asyncio.TimeoutError:
-                logging.error("Operation timed out while sending email")
-                return [types.TextContent(type="text", text="Operation timed out while sending email.")]
-            except Exception as e:
-                error_msg = str(e)
-                logging.error(f"Failed to send email: {error_msg}")
-                return [
-                    types.TextContent(
-                        type="text",
-                        text=f"Failed to send email: {error_msg}\n\nPlease check:\n1. Email and password are correct in .env\n2. SMTP settings are correct\n3. Less secure app access is enabled (for Gmail)\n4. Using App Password if 2FA is enabled",
-                    )
-                ]
-
-        # Connect to IMAP server using predefined credentials
-        logging.info(f"Connecting to IMAP server: {IMAP_SERVER}")
-        logging.info(f"Using email: {EMAIL_ADDRESS}")
-
-        try:
-            mail = imaplib.IMAP4_SSL(IMAP_SERVER)
-            logging.info("IMAP SSL connection established")
-
-            mail.login(EMAIL_ADDRESS, EMAIL_PASSWORD)
-            logging.info("IMAP login successful")
-        except Exception as e:
-            logging.error(f"IMAP connection/login failed: {str(e)}")
-            raise
-
-        if name == "search-emails":
-            # 选择文件夹
-            folder = arguments.get("folder", "inbox")  # 默认选择收件箱
-            logging.info(f"Selecting folder: {folder}")
-
-            try:
-                if folder == "sent":
-                    result = mail.select('"[Gmail]/Sent Mail"')  # 对于 Gmail
-                    logging.info(f"Selected sent folder, result: {result}")
-                else:
-                    result = mail.select("inbox")
-                    logging.info(f"Selected inbox, result: {result}")
-            except Exception as e:
-                logging.error(f"Failed to select folder: {str(e)}")
-                raise
-
-            # Get optional parameters
-            start_date_str = arguments.get("start_date")
-            end_date_str = arguments.get("end_date")
-            keyword = arguments.get("keyword")
-
-            logging.info(f"Raw parameters - start_date: {start_date_str}, end_date: {end_date_str}, keyword: {keyword}")
-
-            # Set default dates if not provided
-            if not start_date_str:
-                start_date_dt = datetime.now() - timedelta(days=7)
-                logging.info(f"No start_date provided, using default: {start_date_dt.strftime('%Y-%m-%d')}")
-            else:
-                start_date_dt = datetime.strptime(start_date_str, "%Y-%m-%d")
-                logging.info(f"Parsed start_date: {start_date_str}")
-
-            if not end_date_str:
-                end_date_dt = datetime.now()
-                logging.info(f"No end_date provided, using today: {end_date_dt.strftime('%Y-%m-%d')}")
-            else:
-                end_date_dt = datetime.strptime(end_date_str, "%Y-%m-%d")
-                logging.info(f"Parsed end_date: {end_date_str}")
-
-            # Format dates for IMAP search (e.g., "01-Jan-2023")
-            imap_start_date = start_date_dt.strftime("%d-%b-%Y")
-            imap_end_date = end_date_dt.strftime("%d-%b-%Y")
-            logging.info(f"IMAP formatted dates - start: {imap_start_date}, end: {imap_end_date}")
-
-            # Build search criteria
-            if start_date_dt.date() == end_date_dt.date():
-                # If searching for a single day
-                search_criteria = f'ON "{imap_start_date}"'
-                logging.info(f"Single day search: {search_criteria}")
-            else:
-                # Include the end date by searching until the day after
-                imap_next_day_after_end = (end_date_dt + timedelta(days=1)).strftime("%d-%b-%Y")
-                search_criteria = f'SINCE "{imap_start_date}" BEFORE "{imap_next_day_after_end}"'
-                logging.info(f"Date range search: {search_criteria}")
-
-            if keyword:
-                # Properly combine keyword search with date criteria
-                keyword_criteria = f'(OR SUBJECT "{keyword}" BODY "{keyword}")'
-                search_criteria = f"({keyword_criteria} {search_criteria})"
-                logging.info(f"Added keyword search, final criteria: {search_criteria}")
-
-            logging.info(f"Final search criteria: {search_criteria}")
-
-            try:
-                async with asyncio.timeout(SEARCH_TIMEOUT):
-                    email_list = await search_emails_async(mail, search_criteria)
-
-                if not email_list:
-                    logging.info("No emails found matching the criteria")
-                    return [types.TextContent(type="text", text="No emails found matching the criteria.")]
-
-                logging.info(f"Formatting {len(email_list)} emails for display")
-
-                # Format the results as a table
-                result_text = "Found emails:\n\n"
-                result_text += "ID | From | Date | Subject\n"
-                result_text += "-" * 80 + "\n"
-
-                for email_item in email_list:
-                    result_text += (
-                        f"{email_item['id']} | {email_item['from']} | {email_item['date']} | {email_item['subject']}\n"
-                    )
-
-                result_text += "\nUse get-email-content with an email ID to view the full content of a specific email."
-
-                logging.info("Successfully returned search results")
-                return [types.TextContent(type="text", text=result_text)]
-
-            except asyncio.TimeoutError:
-                logging.error("Search operation timed out")
-                return [
-                    types.TextContent(
-                        type="text", text="Search operation timed out. Please try with a more specific search criteria."
-                    )
-                ]
-            except Exception as e:
-                logging.error(f"Unexpected error during search: {str(e)}", exc_info=True)
-                raise
-
+            return await _handle_send_email(arguments)
+        elif name == "search-emails":
+            return await _handle_search_emails(arguments)
         elif name == "get-email-content":
-            email_id = arguments.get("email_id")
-            if not email_id:
-                return [types.TextContent(type="text", text="Email ID is required.")]
-
-            try:
-                async with asyncio.timeout(SEARCH_TIMEOUT):
-                    email_content = await get_email_content_async(mail, email_id)
-
-                result_text = (
-                    f"From: {email_content['from']}\n"
-                    f"To: {email_content['to']}\n"
-                    f"Date: {email_content['date']}\n"
-                    f"Subject: {email_content['subject']}\n"
-                    f"\nContent:\n{email_content['content']}"
-                )
-
-                return [types.TextContent(type="text", text=result_text)]
-
-            except asyncio.TimeoutError:
-                return [types.TextContent(type="text", text="Operation timed out while fetching email content.")]
-
+            return await _handle_get_email_content(arguments)
         elif name == "count-daily-emails":
-            start_date = datetime.strptime(arguments["start_date"], "%Y-%m-%d")
-            end_date = datetime.strptime(arguments["end_date"], "%Y-%m-%d")
-
-            result_text = "Daily email counts:\n\n"
-            result_text += "Date | Count\n"
-            result_text += "-" * 30 + "\n"
-
-            current_date = start_date
-            while current_date <= end_date:
-                date_str = current_date.strftime("%d-%b-%Y")
-                search_criteria = f'(ON "{date_str}")'
-
-                try:
-                    async with asyncio.timeout(SEARCH_TIMEOUT):
-                        count = await count_emails_async(mail, search_criteria)
-                        result_text += f"{current_date.strftime('%Y-%m-%d')} | {count}\n"
-                except asyncio.TimeoutError:
-                    result_text += f"{current_date.strftime('%Y-%m-%d')} | Timeout\n"
-
-                current_date += timedelta(days=1)
-
-            return [types.TextContent(type="text", text=result_text)]
-
+            return await _handle_count_daily_emails(arguments)
         else:
             raise ValueError(f"Unknown tool: {name}")
-
     except Exception as e:
         logging.error(f"Error in handle_call_tool for {name}: {str(e)}", exc_info=True)
         return [types.TextContent(type="text", text=f"Error: {str(e)}")]
-    finally:
-        if mail is not None:
-            try:
-                mail.close()
-                mail.logout()
-                logging.info("IMAP connection closed")
-            except Exception as cleanup_e:
-                logging.warning(f"Error closing IMAP connection: {str(cleanup_e)}")
 
 
 async def main() -> None:
