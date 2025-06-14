@@ -470,6 +470,105 @@ This email can be safely deleted after the integration test completes.
             self.log_result("Permanent delete email", False, f"Unexpected error: {e}")
             return False
 
+    async def test_pagination_functionality(self) -> bool:
+        """Test pagination functionality with real email data."""
+        print("\n🔄 Testing: Email search pagination...")
+
+        try:
+            today = datetime.now().strftime("%Y-%m-%d")
+            
+            # Test 1: Default pagination (first page)
+            print("    Testing default pagination (first page)...")
+            criteria_page1 = SearchCriteria(
+                folder="inbox",
+                start_date=today,
+                end_date=today,
+                max_results=5,
+                start_from=0
+            )
+            
+            emails_page1 = await self.client.search_emails(criteria_page1)
+            page1_count = len(emails_page1)
+            
+            # Test 2: Second page pagination
+            print("    Testing second page pagination...")
+            criteria_page2 = SearchCriteria(
+                folder="inbox", 
+                start_date=today,
+                end_date=today,
+                max_results=5,
+                start_from=5
+            )
+            
+            emails_page2 = await self.client.search_emails(criteria_page2)
+            page2_count = len(emails_page2)
+            
+            # Test 3: Small batch size
+            print("    Testing small batch size (max_results=1)...")
+            criteria_small = SearchCriteria(
+                folder="inbox",
+                start_date=today,
+                end_date=today,
+                max_results=1,
+                start_from=0
+            )
+            
+            emails_small = await self.client.search_emails(criteria_small)
+            small_count = len(emails_small)
+            
+            # Test 4: Out of bounds pagination
+            print("    Testing out of bounds pagination...")
+            criteria_oob = SearchCriteria(
+                folder="inbox",
+                start_date=today,
+                end_date=today,
+                max_results=10,
+                start_from=9999  # Way beyond available emails
+            )
+            
+            emails_oob = await self.client.search_emails(criteria_oob)
+            oob_count = len(emails_oob)
+            
+            # Validate results
+            success = True
+            details = []
+            
+            # Check that pages don't overlap (if we have enough emails)
+            if page1_count > 0 and page2_count > 0:
+                page1_ids = {email['id'] for email in emails_page1}
+                page2_ids = {email['id'] for email in emails_page2}
+                overlap = page1_ids.intersection(page2_ids)
+                
+                if overlap:
+                    success = False
+                    details.append(f"Page overlap detected: {overlap}")
+                else:
+                    details.append("✓ No page overlap detected")
+            
+            # Check small batch works
+            if small_count > 1:
+                success = False
+                details.append(f"Small batch returned {small_count} results, expected ≤ 1")
+            else:
+                details.append(f"✓ Small batch returned {small_count} results (≤ 1)")
+            
+            # Check out of bounds returns empty
+            if oob_count > 0:
+                details.append(f"⚠️ Out of bounds returned {oob_count} results (expected 0, but may be valid)")
+            else:
+                details.append("✓ Out of bounds correctly returned 0 results")
+            
+            # Summary
+            details.append(f"Page 1: {page1_count} results, Page 2: {page2_count} results")
+            details.append(f"Small batch: {small_count} results, Out of bounds: {oob_count} results")
+            
+            self.log_result("Pagination functionality", success, "; ".join(details))
+            return success
+            
+        except Exception as e:
+            self.log_result("Pagination functionality", False, f"Error: {e}")
+            return False
+
     def print_summary(self) -> None:
         """Print final test summary."""
         print("\n" + "="*60)
@@ -526,6 +625,9 @@ This email can be safely deleted after the integration test completes.
 
         # Test 6: List available folders
         await self.test_list_folders()
+
+        # Test 7: Pagination tests
+        await self.test_pagination_functionality()
 
         # Test 7: Test email moving (only if we found test email and have folders)
         if test_email_id and content_test_passed:
