@@ -20,16 +20,16 @@ Security:
   Use --enable-write-operations to enable move-email and delete-email tools.
         """
     )
-    
+
     parser.add_argument(
         "--enable-write-operations",
         action="store_true",
         help="Enable write operations (move-email, delete-email). "
              "By default, only read operations are available for safety."
     )
-    
+
     args = parser.parse_args()
-    
+
     # Run the server with parsed arguments
     asyncio.run(server.main(enable_write_operations=args.enable_write_operations))
 

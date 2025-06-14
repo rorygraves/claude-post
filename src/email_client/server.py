@@ -242,24 +242,24 @@ async def _handle_list_folders(
     """Handle list-folders tool to discover available email folders."""
     try:
         folders = await email_client.list_folders()
-        
+
         if not folders:
             return [types.TextContent(type="text", text="No folders found.")]
-        
+
         # Format the results as a table
         result_text = "Available email folders:\n\n"
         result_text += "Folder Name | Display Name | Attributes\n"
         result_text += "-" * 60 + "\n"
-        
+
         for folder in folders:
             result_text += f"{folder['name']} | {folder['display_name']} | {folder['attributes']}\n"
-        
+
         result_text += f"\nFound {len(folders)} folders total.\n"
         result_text += "Use any 'Folder Name' value in the search-emails tool."
-        
+
         logging.info(f"Successfully returned {len(folders)} folders")
         return [types.TextContent(type="text", text=result_text)]
-        
+
     except EmailSearchError as e:
         return [types.TextContent(type="text", text=f"Failed to list folders: {e!s}")]
     except Exception as e:
@@ -274,14 +274,14 @@ async def _handle_move_email(
     email_ids = arguments.get("email_ids")
     source_folder = arguments.get("source_folder", "inbox")
     destination_folder = arguments.get("destination_folder")
-    
+
     # Validate required parameters
     if not email_ids:
         return [types.TextContent(type="text", text="Email IDs are required.")]
-    
+
     if not destination_folder:
         return [types.TextContent(type="text", text="Destination folder is required.")]
-    
+
     # Handle array inputs (primary) and maintain backward compatibility for single strings
     if isinstance(email_ids, list):
         ids_to_move = email_ids
@@ -290,25 +290,25 @@ async def _handle_move_email(
         ids_to_move = [email_ids]
     else:
         return [types.TextContent(type="text", text="Email IDs must be an array of strings.")]
-    
+
     if not ids_to_move:
         return [types.TextContent(type="text", text="At least one email ID is required.")]
-    
+
     try:
         await email_client.move_email(ids_to_move, source_folder, destination_folder)
-        
+
         count = len(ids_to_move)
         email_word = "email" if count == 1 else "emails"
-        
+
         result_text = (
             f"Successfully moved {count} {email_word} from '{source_folder}' to '{destination_folder}'.\n"
             f"The {email_word} {('is' if count == 1 else 'are')} no longer in the source folder and can now be found in the destination folder.\n"
             f"Moved IDs: {', '.join(ids_to_move)}"
         )
-        
+
         logging.info(f"Successfully moved {count} emails via MCP tool")
         return [types.TextContent(type="text", text=result_text)]
-        
+
     except EmailDeletionError as e:
         return [types.TextContent(type="text", text=f"Failed to move emails: {e!s}")]
     except Exception as e:
@@ -323,11 +323,11 @@ async def _handle_delete_email(
     email_ids = arguments.get("email_ids")
     folder = arguments.get("folder", "inbox")
     permanent = arguments.get("permanent", False)
-    
+
     # Validate required parameters
     if not email_ids:
         return [types.TextContent(type="text", text="Email IDs are required.")]
-    
+
     # Handle array inputs (primary) and maintain backward compatibility for single strings
     if isinstance(email_ids, list):
         ids_to_delete = email_ids
@@ -336,16 +336,16 @@ async def _handle_delete_email(
         ids_to_delete = [email_ids]
     else:
         return [types.TextContent(type="text", text="Email IDs must be an array of strings.")]
-    
+
     if not ids_to_delete:
         return [types.TextContent(type="text", text="At least one email ID is required.")]
-    
+
     try:
         await email_client.delete_email(ids_to_delete, folder, permanent)
-        
+
         count = len(ids_to_delete)
         email_word = "email" if count == 1 else "emails"
-        
+
         if permanent:
             result_text = (
                 f"Successfully permanently deleted {count} {email_word} from '{folder}'.\n"
@@ -358,10 +358,10 @@ async def _handle_delete_email(
                 f"The {email_word} can be restored from the trash folder if needed.\n"
                 f"Moved IDs: {', '.join(ids_to_delete)}"
             )
-        
+
         logging.info(f"Successfully deleted {count} emails via MCP tool (permanent={permanent})")
         return [types.TextContent(type="text", text=result_text)]
-        
+
     except EmailDeletionError as e:
         return [types.TextContent(type="text", text=f"Failed to delete emails: {e!s}")]
     except Exception as e:
@@ -477,7 +477,7 @@ async def handle_list_tools() -> List[types.Tool]:
             },
         ),
     ]
-    
+
     # Add write operations (move/delete) only if enabled
     if WRITE_OPERATIONS_ENABLED:
         tools.extend([
@@ -528,7 +528,7 @@ async def handle_list_tools() -> List[types.Tool]:
                 },
             ),
         ])
-    
+
     return tools
 
 
@@ -586,7 +586,7 @@ async def main(enable_write_operations: bool = False) -> None:
     """
     global WRITE_OPERATIONS_ENABLED
     WRITE_OPERATIONS_ENABLED = enable_write_operations
-    
+
     logging.info("Starting MCP server main function")
     logging.info(f"Write operations enabled: {WRITE_OPERATIONS_ENABLED}")
     logging.info(f"Available tools: {'read/write' if WRITE_OPERATIONS_ENABLED else 'read-only'}")

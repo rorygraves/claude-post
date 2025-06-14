@@ -39,7 +39,7 @@ from tests.test_email_integration import main as run_tests
 def check_environment():
     """Check if environment is properly configured for testing."""
     print("🔍 Checking environment configuration...")
-    
+
     # Check if .env file exists
     env_file = Path(__file__).parent / ".env"
     if not env_file.exists():
@@ -51,21 +51,21 @@ def check_environment():
         print("SMTP_SERVER=smtp.gmail.com")
         print("SMTP_PORT=587")
         return False
-    
+
     # Try to import config to validate it loads properly
     try:
         from src.email_client.config import EMAIL_ADDRESS, EMAIL_PASSWORD
-        
+
         if EMAIL_ADDRESS == "your.email@gmail.com" or EMAIL_PASSWORD == "your-app-specific-password":
             print("❌ Error: Default placeholder values detected in .env file!")
             print("Please update .env with your actual email credentials.")
             return False
-            
-        print(f"✅ Configuration loaded successfully")
+
+        print("✅ Configuration loaded successfully")
         print(f"   Email: {EMAIL_ADDRESS}")
         print(f"   .env file: {env_file}")
         return True
-        
+
     except ImportError as e:
         print(f"❌ Error importing email configuration: {e}")
         return False
@@ -113,27 +113,27 @@ def print_footer():
 async def main():
     """Main entry point for test runner."""
     print_banner()
-    
+
     # Check environment configuration
     if not check_environment():
         print("\n❌ Environment check failed. Please fix the issues above and try again.")
         sys.exit(1)
-    
+
     print("\n🚀 Starting integration tests...\n")
-    
+
     try:
         # Run the integration tests
         await run_tests()
-        
+
     except KeyboardInterrupt:
         print("\n\n⏹️  Tests interrupted by user")
         sys.exit(1)
-        
+
     except Exception as e:
         print(f"\n\n❌ Unexpected error running tests: {e}")
         print("Check email_client.log for detailed error information")
         sys.exit(1)
-    
+
     finally:
         print_footer()
 
