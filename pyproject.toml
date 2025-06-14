@@ -10,9 +10,25 @@ dependencies = [
     "python-dotenv>=1.0.0",
 ]
 
+[project.optional-dependencies]
+dev = [
+    "mypy>=1.11.0",
+    "black>=24.4.0",
+    "types-python-dateutil",
+]
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project.scripts]
 email-client = "email_client:main"
+
+[tool.black]
+line-length = 120
+target-version = ["py312"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+ignore_missing_imports = true

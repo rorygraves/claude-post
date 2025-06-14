@@ -1,4 +1,4 @@
-from typing import Any
+from typing import Any, Dict, List, Optional, Tuple, Union
 import asyncio
 from datetime import datetime, timedelta
 import email
@@ -17,20 +17,20 @@ import mcp.server.stdio
 # Configure logging
 logging.basicConfig(
     level=logging.DEBUG,
-    format='%(asctime)s - %(levelname)s - %(funcName)s:%(lineno)d - %(message)s',
-    filename='email_client.log'
+    format="%(asctime)s - %(levelname)s - %(funcName)s:%(lineno)d - %(message)s",
+    filename="email_client.log",
 )
 
 # Load environment variables from .env file
 load_dotenv()
 
 # Email configuration
-EMAIL_CONFIG = {
+EMAIL_CONFIG: Dict[str, Union[str, int]] = {
     "email": os.getenv("EMAIL_ADDRESS", "your.email@gmail.com"),
     "password": os.getenv("EMAIL_PASSWORD", "your-app-specific-password"),
     "imap_server": os.getenv("IMAP_SERVER", "imap.gmail.com"),
     "smtp_server": os.getenv("SMTP_SERVER", "smtp.gmail.com"),
-    "smtp_port": int(os.getenv("SMTP_PORT", "587"))
+    "smtp_port": int(os.getenv("SMTP_PORT", "587")),
 }
 
 logging.info("=== Email Client Server Starting ===")
@@ -45,10 +45,11 @@ MAX_EMAILS = 100
 
 server = Server("email")
 
-def format_email_summary(msg_data: tuple) -> dict:
+
+def format_email_summary(msg_data: Tuple[Any, ...]) -> Dict[str, str]:
     """Format an email message into a summary dict with basic information."""
     email_body = email.message_from_bytes(msg_data[0][1])
-    
+
     return {
         "id": msg_data[0][0].split()[0].decode(),  # Get the email ID
         "from": email_body.get("From", "Unknown"),
@@ -56,69 +57,87 @@ def format_email_summary(msg_data: tuple) -> dict:
         "subject": email_body.get("Subject", "No Subject"),
     }
 
-def format_email_content(msg_data: tuple) -> dict:
+
+def format_email_content(msg_data: Tuple[Any, ...]) -> Dict[str, str]:
     """Format an email message into a dict with full content."""
     email_body = email.message_from_bytes(msg_data[0][1])
-    
+
     # Extract body content
     body = ""
     if email_body.is_multipart():
         # Handle multipart messages
         for part in email_body.walk():
             if part.get_content_type() == "text/plain":
-                body = part.get_payload(decode=True).decode()
+                payload = part.get_payload(decode=True)
+                if isinstance(payload, bytes):
+                    body = payload.decode()
                 break
             elif part.get_content_type() == "text/html":
                 # If no plain text found, use HTML content
                 if not body:
-                    body = part.get_payload(decode=True).decode()
+                    payload = part.get_payload(decode=True)
+                    if isinstance(payload, bytes):
+                        body = payload.decode()
     else:
         # Handle non-multipart messages
-        body = email_body.get_payload(decode=True).decode()
-    
+        payload = email_body.get_payload(decode=True)
+        if isinstance(payload, bytes):
+            body = payload.decode()
+
     return {
         "from": email_body.get("From", "Unknown"),
         "to": email_body.get("To", "Unknown"),
         "date": email_body.get("Date", "Unknown"),
         "subject": email_body.get("Subject", "No Subject"),
-        "content": body
+        "content": body,
     }
 
-async def search_emails_async(mail: imaplib.IMAP4_SSL, search_criteria: str) -> list[dict]:
+
+async def search_emails_async(mail: imaplib.IMAP4_SSL, search_criteria: str) -> List[Dict[str, str]]:
     """Asynchronously search emails with timeout."""
     loop = asyncio.get_event_loop()
     try:
         logging.debug(f"Executing IMAP search with criteria: {search_criteria}")
         _, messages = await loop.run_in_executor(None, lambda: mail.search(None, search_criteria))
         logging.debug(f"Search result: {messages}")
-        
+
         if not messages[0]:
             logging.info("No messages found matching criteria")
             return []
-        
+
         message_ids = messages[0].split()
         logging.info(f"Found {len(message_ids)} messages, fetching up to {MAX_EMAILS}")
-        
+
         email_list = []
         for i, num in enumerate(message_ids[:MAX_EMAILS]):  # Limit to MAX_EMAILS
             logging.debug(f"Fetching email {i+1}/{min(len(message_ids), MAX_EMAILS)}, ID: {num}")
-            _, msg_data = await loop.run_in_executor(None, lambda: mail.fetch(num, '(RFC822)'))
-            email_list.append(format_email_summary(msg_data))
             
+            def fetch_email() -> Any:
+                return mail.fetch(num, "(RFC822)")
+            
+            _, msg_data = await loop.run_in_executor(None, fetch_email)
+            if msg_data and msg_data[0]:
+                email_list.append(format_email_summary((msg_data[0],)))
+
         logging.info(f"Successfully fetched {len(email_list)} emails")
         return email_list
     except Exception as e:
         logging.error(f"Error in search_emails_async: {str(e)}", exc_info=True)
         raise Exception(f"Error searching emails: {str(e)}")
 
-async def get_email_content_async(mail: imaplib.IMAP4_SSL, email_id: str) -> dict:
+
+async def get_email_content_async(mail: imaplib.IMAP4_SSL, email_id: str) -> Dict[str, str]:
     """Asynchronously get full content of a specific email."""
     loop = asyncio.get_event_loop()
     try:
-        _, msg_data = await loop.run_in_executor(None, lambda: mail.fetch(email_id, '(RFC822)'))
-        return format_email_content(msg_data)
+        _, msg_data = await loop.run_in_executor(None, lambda: mail.fetch(email_id, "(RFC822)"))
+        if msg_data and msg_data[0]:
+            return format_email_content((msg_data[0],))
+        else:
+            raise Exception("No email data returned")
     except Exception as e:
         raise Exception(f"Error fetching email content: {str(e)}")
+
 
 async def count_emails_async(mail: imaplib.IMAP4_SSL, search_criteria: str) -> int:
     """Asynchronously count emails matching the search criteria."""
@@ -129,60 +148,59 @@ async def count_emails_async(mail: imaplib.IMAP4_SSL, search_criteria: str) -> i
     except Exception as e:
         raise Exception(f"Error counting emails: {str(e)}")
 
+
 async def send_email_async(
-    to_addresses: list[str],
-    subject: str,
-    content: str,
-    cc_addresses: list[str] | None = None
+    to_addresses: List[str], subject: str, content: str, cc_addresses: Optional[List[str]] = None
 ) -> None:
     """Asynchronously send an email."""
     try:
         # Create message
         msg = MIMEMultipart()
-        msg['From'] = EMAIL_CONFIG["email"]
-        msg['To'] = ', '.join(to_addresses)
+        msg["From"] = str(EMAIL_CONFIG["email"])
+        msg["To"] = ", ".join(to_addresses)
         if cc_addresses:
-            msg['Cc'] = ', '.join(cc_addresses)
-        msg['Subject'] = subject
-        
+            msg["Cc"] = ", ".join(cc_addresses)
+        msg["Subject"] = subject
+
         # Add body
-        msg.attach(MIMEText(content, 'plain', 'utf-8'))
-        
+        msg.attach(MIMEText(content, "plain", "utf-8"))
+
         # Connect to SMTP server and send email
-        def send_sync():
-            with smtplib.SMTP(EMAIL_CONFIG["smtp_server"], EMAIL_CONFIG["smtp_port"]) as server:
-                server.set_debuglevel(1)  # Enable debug output
+        def send_sync() -> None:
+            with smtplib.SMTP(str(EMAIL_CONFIG["smtp_server"]), int(EMAIL_CONFIG["smtp_port"])) as smtp_server:
+                smtp_server.set_debuglevel(1)  # Enable debug output
                 logging.debug(f"Connecting to {EMAIL_CONFIG['smtp_server']}:{EMAIL_CONFIG['smtp_port']}")
-                
+
                 # Start TLS
                 logging.debug("Starting TLS")
-                server.starttls()
-                
+                smtp_server.starttls()
+
                 # Login
                 logging.debug(f"Logging in as {EMAIL_CONFIG['email']}")
-                server.login(EMAIL_CONFIG["email"], EMAIL_CONFIG["password"])
-                
+                smtp_server.login(str(EMAIL_CONFIG["email"]), str(EMAIL_CONFIG["password"]))
+
                 # Send email
                 all_recipients = to_addresses + (cc_addresses or [])
                 logging.debug(f"Sending email to: {all_recipients}")
-                result = server.send_message(msg, EMAIL_CONFIG["email"], all_recipients)
-                
+                result = smtp_server.send_message(msg, str(EMAIL_CONFIG["email"]), all_recipients)
+
                 if result:
                     # send_message returns a dict of failed recipients
                     raise Exception(f"Failed to send to some recipients: {result}")
-                
+
                 logging.debug("Email sent successfully")
-        
+
         # Run the synchronous send function in the executor
         loop = asyncio.get_event_loop()
         await loop.run_in_executor(None, send_sync)
-        
+
     except Exception as e:
         logging.error(f"Error in send_email_async: {str(e)}")
         raise
 
-@server.list_tools()
-async def handle_list_tools() -> list[types.Tool]:
+
+@server.list_tools()  # type: ignore
+async def handle_list_tools() -> List[types.Tool]:
     """
     List available tools.
     Each tool specifies its arguments using JSON Schema validation.
@@ -276,78 +294,78 @@ async def handle_list_tools() -> list[types.Tool]:
         ),
     ]
 
-@server.call_tool()
+
+@server.call_tool()  # type: ignore
 async def handle_call_tool(
-    name: str, arguments: dict | None
-) -> list[types.TextContent | types.ImageContent | types.EmbeddedResource]:
+    name: str, arguments: Optional[Dict[str, Any]]
+) -> List[Union[types.TextContent, types.ImageContent, types.EmbeddedResource]]:
     """
     Handle tool execution requests.
     Tools can search emails and return results.
     """
     if not arguments:
         arguments = {}
-    
+
     logging.info(f"=== Tool Call: {name} ===")
     logging.info(f"Arguments: {arguments}")
     
+    mail: Optional[imaplib.IMAP4_SSL] = None
+
     try:
         if name == "send-email":
             to_addresses = arguments.get("to", [])
             subject = arguments.get("subject", "")
             content = arguments.get("content", "")
             cc_addresses = arguments.get("cc", [])
-            
+
             if not to_addresses:
-                return [types.TextContent(
-                    type="text",
-                    text="At least one recipient email address is required."
-                )]
-            
+                return [types.TextContent(type="text", text="At least one recipient email address is required.")]
+
             try:
                 logging.info("Attempting to send email")
                 logging.info(f"To: {to_addresses}")
                 logging.info(f"Subject: {subject}")
                 logging.info(f"CC: {cc_addresses}")
-                
+
                 async with asyncio.timeout(SEARCH_TIMEOUT):
                     await send_email_async(to_addresses, subject, content, cc_addresses)
-                    return [types.TextContent(
-                        type="text",
-                        text="Email sent successfully! Check email_client.log for detailed logs."
-                    )]
+                    return [
+                        types.TextContent(
+                            type="text", text="Email sent successfully! Check email_client.log for detailed logs."
+                        )
+                    ]
             except asyncio.TimeoutError:
                 logging.error("Operation timed out while sending email")
-                return [types.TextContent(
-                    type="text",
-                    text="Operation timed out while sending email."
-                )]
+                return [types.TextContent(type="text", text="Operation timed out while sending email.")]
             except Exception as e:
                 error_msg = str(e)
                 logging.error(f"Failed to send email: {error_msg}")
-                return [types.TextContent(
-                    type="text",
-                    text=f"Failed to send email: {error_msg}\n\nPlease check:\n1. Email and password are correct in .env\n2. SMTP settings are correct\n3. Less secure app access is enabled (for Gmail)\n4. Using App Password if 2FA is enabled"
-                )]
-        
+                return [
+                    types.TextContent(
+                        type="text",
+                        text=f"Failed to send email: {error_msg}\n\nPlease check:\n1. Email and password are correct in .env\n2. SMTP settings are correct\n3. Less secure app access is enabled (for Gmail)\n4. Using App Password if 2FA is enabled",
+                    )
+                ]
+
         # Connect to IMAP server using predefined credentials
         logging.info(f"Connecting to IMAP server: {EMAIL_CONFIG['imap_server']}")
         logging.info(f"Using email: {EMAIL_CONFIG['email']}")
-        
+
         try:
-            mail = imaplib.IMAP4_SSL(EMAIL_CONFIG["imap_server"])
+            mail = imaplib.IMAP4_SSL(str(EMAIL_CONFIG["imap_server"]))
             logging.info("IMAP SSL connection established")
-            
-            mail.login(EMAIL_CONFIG["email"], EMAIL_CONFIG["password"])
+
+            mail.login(str(EMAIL_CONFIG["email"]), str(EMAIL_CONFIG["password"]))
             logging.info("IMAP login successful")
         except Exception as e:
             logging.error(f"IMAP connection/login failed: {str(e)}")
             raise
-        
+
         if name == "search-emails":
             # 选择文件夹
             folder = arguments.get("folder", "inbox")  # 默认选择收件箱
             logging.info(f"Selecting folder: {folder}")
-            
+
             try:
                 if folder == "sent":
                     result = mail.select('"[Gmail]/Sent Mail"')  # 对于 Gmail
@@ -358,14 +376,14 @@ async def handle_call_tool(
             except Exception as e:
                 logging.error(f"Failed to select folder: {str(e)}")
                 raise
-            
+
             # Get optional parameters
             start_date_str = arguments.get("start_date")
             end_date_str = arguments.get("end_date")
             keyword = arguments.get("keyword")
-            
+
             logging.info(f"Raw parameters - start_date: {start_date_str}, end_date: {end_date_str}, keyword: {keyword}")
-            
+
             # Set default dates if not provided
             if not start_date_str:
                 start_date_dt = datetime.now() - timedelta(days=7)
@@ -373,7 +391,7 @@ async def handle_call_tool(
             else:
                 start_date_dt = datetime.strptime(start_date_str, "%Y-%m-%d")
                 logging.info(f"Parsed start_date: {start_date_str}")
-            
+
             if not end_date_str:
                 end_date_dt = datetime.now()
                 logging.info(f"No end_date provided, using today: {end_date_dt.strftime('%Y-%m-%d')}")
@@ -385,7 +403,7 @@ async def handle_call_tool(
             imap_start_date = start_date_dt.strftime("%d-%b-%Y")
             imap_end_date = end_date_dt.strftime("%d-%b-%Y")
             logging.info(f"IMAP formatted dates - start: {imap_start_date}, end: {imap_end_date}")
-            
+
             # Build search criteria
             if start_date_dt.date() == end_date_dt.date():
                 # If searching for a single day
@@ -396,66 +414,58 @@ async def handle_call_tool(
                 imap_next_day_after_end = (end_date_dt + timedelta(days=1)).strftime("%d-%b-%Y")
                 search_criteria = f'SINCE "{imap_start_date}" BEFORE "{imap_next_day_after_end}"'
                 logging.info(f"Date range search: {search_criteria}")
-                
+
             if keyword:
                 # Properly combine keyword search with date criteria
                 keyword_criteria = f'(OR SUBJECT "{keyword}" BODY "{keyword}")'
-                search_criteria = f'({keyword_criteria} {search_criteria})'
+                search_criteria = f"({keyword_criteria} {search_criteria})"
                 logging.info(f"Added keyword search, final criteria: {search_criteria}")
-            
+
             logging.info(f"Final search criteria: {search_criteria}")
-            
+
             try:
                 async with asyncio.timeout(SEARCH_TIMEOUT):
                     email_list = await search_emails_async(mail, search_criteria)
-                    
+
                 if not email_list:
                     logging.info("No emails found matching the criteria")
-                    return [types.TextContent(
-                        type="text",
-                        text="No emails found matching the criteria."
-                    )]
-                
+                    return [types.TextContent(type="text", text="No emails found matching the criteria.")]
+
                 logging.info(f"Formatting {len(email_list)} emails for display")
-                
+
                 # Format the results as a table
                 result_text = "Found emails:\n\n"
                 result_text += "ID | From | Date | Subject\n"
                 result_text += "-" * 80 + "\n"
-                
-                for email in email_list:
-                    result_text += f"{email['id']} | {email['from']} | {email['date']} | {email['subject']}\n"
-                
+
+                for email_item in email_list:
+                    result_text += f"{email_item['id']} | {email_item['from']} | {email_item['date']} | {email_item['subject']}\n"
+
                 result_text += "\nUse get-email-content with an email ID to view the full content of a specific email."
-                
+
                 logging.info("Successfully returned search results")
-                return [types.TextContent(
-                    type="text",
-                    text=result_text
-                )]
-                
+                return [types.TextContent(type="text", text=result_text)]
+
             except asyncio.TimeoutError:
                 logging.error("Search operation timed out")
-                return [types.TextContent(
-                    type="text",
-                    text="Search operation timed out. Please try with a more specific search criteria."
-                )]
+                return [
+                    types.TextContent(
+                        type="text", text="Search operation timed out. Please try with a more specific search criteria."
+                    )
+                ]
             except Exception as e:
                 logging.error(f"Unexpected error during search: {str(e)}", exc_info=True)
                 raise
-                
+
         elif name == "get-email-content":
             email_id = arguments.get("email_id")
             if not email_id:
-                return [types.TextContent(
-                    type="text",
-                    text="Email ID is required."
-                )]
-            
+                return [types.TextContent(type="text", text="Email ID is required.")]
+
             try:
                 async with asyncio.timeout(SEARCH_TIMEOUT):
                     email_content = await get_email_content_async(mail, email_id)
-                    
+
                 result_text = (
                     f"From: {email_content['from']}\n"
                     f"To: {email_content['to']}\n"
@@ -463,64 +473,53 @@ async def handle_call_tool(
                     f"Subject: {email_content['subject']}\n"
                     f"\nContent:\n{email_content['content']}"
                 )
-                
-                return [types.TextContent(
-                    type="text",
-                    text=result_text
-                )]
-                
+
+                return [types.TextContent(type="text", text=result_text)]
+
             except asyncio.TimeoutError:
-                return [types.TextContent(
-                    type="text",
-                    text="Operation timed out while fetching email content."
-                )]
-                
+                return [types.TextContent(type="text", text="Operation timed out while fetching email content.")]
+
         elif name == "count-daily-emails":
             start_date = datetime.strptime(arguments["start_date"], "%Y-%m-%d")
             end_date = datetime.strptime(arguments["end_date"], "%Y-%m-%d")
-            
+
             result_text = "Daily email counts:\n\n"
             result_text += "Date | Count\n"
             result_text += "-" * 30 + "\n"
-            
+
             current_date = start_date
             while current_date <= end_date:
                 date_str = current_date.strftime("%d-%b-%Y")
                 search_criteria = f'(ON "{date_str}")'
-                
+
                 try:
                     async with asyncio.timeout(SEARCH_TIMEOUT):
                         count = await count_emails_async(mail, search_criteria)
                         result_text += f"{current_date.strftime('%Y-%m-%d')} | {count}\n"
                 except asyncio.TimeoutError:
                     result_text += f"{current_date.strftime('%Y-%m-%d')} | Timeout\n"
-                
+
                 current_date += timedelta(days=1)
-            
-            return [types.TextContent(
-                type="text",
-                text=result_text
-            )]
-                
+
+            return [types.TextContent(type="text", text=result_text)]
+
         else:
             raise ValueError(f"Unknown tool: {name}")
-            
+
     except Exception as e:
         logging.error(f"Error in handle_call_tool for {name}: {str(e)}", exc_info=True)
-        return [types.TextContent(
-            type="text",
-            text=f"Error: {str(e)}"
-        )]
+        return [types.TextContent(type="text", text=f"Error: {str(e)}")]
     finally:
-        try:
-            if 'mail' in locals():
+        if mail is not None:
+            try:
                 mail.close()
                 mail.logout()
                 logging.info("IMAP connection closed")
-        except Exception as e:
-            logging.warning(f"Error closing IMAP connection: {str(e)}")
+            except Exception as cleanup_e:
+                logging.warning(f"Error closing IMAP connection: {str(cleanup_e)}")
 
-async def main():
+
+async def main() -> None:
     logging.info("Starting MCP server main function")
     # Run the server using stdin/stdout streams
     async with mcp.server.stdio.stdio_server() as (read_stream, write_stream):
@@ -538,6 +537,7 @@ async def main():
             ),
         )
 
+
 if __name__ == "__main__":
     try:
         asyncio.run(main())
@@ -545,4 +545,3 @@ if __name__ == "__main__":
         logging.info("Server stopped by user")
     except Exception as e:
         logging.error(f"Server crashed: {str(e)}", exc_info=True)
-
