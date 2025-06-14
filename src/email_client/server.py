@@ -1,19 +1,20 @@
-from typing import Any, Dict, List, Literal, Optional, Tuple, Union, cast
 import asyncio
-from datetime import datetime, timedelta
-from dataclasses import dataclass
 import email
 import imaplib
-import smtplib
 import logging
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
 import os
-from dotenv import load_dotenv
-from mcp.server.models import InitializationOptions
-import mcp.types as types
-from mcp.server import NotificationOptions, Server
+import smtplib
+from dataclasses import dataclass
+from datetime import datetime, timedelta
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+from typing import Any, Dict, List, Literal, Optional, Tuple, Union, cast
+
 import mcp.server.stdio
+from dotenv import load_dotenv
+from mcp import types
+from mcp.server import NotificationOptions, Server
+from mcp.server.models import InitializationOptions
 
 # Configure logging
 logging.basicConfig(
@@ -78,14 +79,14 @@ class SearchCriteria:
         if self.start_date:
             try:
                 datetime.strptime(self.start_date, "%Y-%m-%d")
-            except ValueError:
-                raise ValueError(f"Invalid start_date format: {self.start_date}. Expected YYYY-MM-DD")
+            except ValueError as e:
+                raise ValueError(f"Invalid start_date format: {self.start_date}. Expected YYYY-MM-DD") from e
 
         if self.end_date:
             try:
                 datetime.strptime(self.end_date, "%Y-%m-%d")
-            except ValueError:
-                raise ValueError(f"Invalid end_date format: {self.end_date}. Expected YYYY-MM-DD")
+            except ValueError as e:
+                raise ValueError(f"Invalid end_date format: {self.end_date}. Expected YYYY-MM-DD") from e
 
 
 @dataclass
@@ -130,10 +131,11 @@ class EmailClient:
 
             mail.login(self.email_address, self.email_password)
             logging.info("IMAP login successful")
-            return mail
         except Exception as e:
-            logging.error(f"IMAP connection/login failed: {str(e)}")
-            raise EmailConnectionError(f"Failed to connect to IMAP server: {str(e)}")
+            logging.exception("IMAP connection/login failed")
+            raise EmailConnectionError(f"Failed to connect to IMAP server: {e!s}") from e
+        else:
+            return mail
 
     async def close_imap_connection(self, mail: imaplib.IMAP4_SSL) -> None:
         """Safely close IMAP connection."""
@@ -142,7 +144,7 @@ class EmailClient:
             mail.logout()
             logging.info("IMAP connection closed")
         except Exception as e:
-            logging.warning(f"Error closing IMAP connection: {str(e)}")
+            logging.warning(f"Error closing IMAP connection: {e!s}")
 
     async def search_emails(self, criteria: SearchCriteria) -> List[Dict[str, str]]:
         """Search emails with specified criteria."""
@@ -166,16 +168,17 @@ class EmailClient:
             # Execute search
             email_list = await self._execute_search(mail, search_criteria)
             logging.info(f"Successfully fetched {len(email_list)} emails")
-            return email_list
 
         except Exception as e:
-            logging.error(f"Error in search_emails: {str(e)}", exc_info=True)
-            raise EmailSearchError(f"Email search failed: {str(e)}")
+            logging.error(f"Error in search_emails: {e!s}", exc_info=True)
+            raise EmailSearchError(f"Email search failed: {e!s}") from e
+        else:
+            return email_list
         finally:
             if mail:
                 await self.close_imap_connection(mail)
 
-    async def get_email_content(self, email_id: str) -> Dict[str, str]:
+    async def get_email_content(self, email_id: str) -> Optional[Dict[str, str]]:
         """Get full content of a specific email."""
         mail = None
         try:
@@ -187,12 +190,13 @@ class EmailClient:
 
             if msg_data and msg_data[0]:
                 return self._format_email_content((msg_data[0],))
-            else:
-                raise EmailSearchError("No email data returned")
 
         except Exception as e:
-            logging.error(f"Error fetching email content: {str(e)}", exc_info=True)
-            raise EmailSearchError(f"Failed to get email content: {str(e)}")
+            logging.error(f"Error fetching email content: {e!s}", exc_info=True)
+            raise EmailSearchError(f"Failed to get email content: {e!s}") from e
+        else:
+            self._raise_no_email_data_error()
+            return None  # This line will never be reached but satisfies mypy
         finally:
             if mail:
                 await self.close_imap_connection(mail)
@@ -216,8 +220,8 @@ class EmailClient:
             logging.info("Email sent successfully")
 
         except Exception as e:
-            logging.error(f"Error in send_email: {str(e)}", exc_info=True)
-            raise EmailSendError(f"Failed to send email: {str(e)}")
+            logging.error(f"Error in send_email: {e!s}", exc_info=True)
+            raise EmailSendError(f"Failed to send email: {e!s}") from e
 
     async def count_daily_emails(self, start_date: str, end_date: str) -> Dict[str, int]:
         """Count emails for each day in a date range."""
@@ -245,11 +249,11 @@ class EmailClient:
 
                 current_date += timedelta(days=1)
 
-            return daily_counts
-
         except Exception as e:
-            logging.error(f"Error in count_daily_emails: {str(e)}", exc_info=True)
-            raise EmailSearchError(f"Failed to count emails: {str(e)}")
+            logging.error(f"Error in count_daily_emails: {e!s}", exc_info=True)
+            raise EmailSearchError(f"Failed to count emails: {e!s}") from e
+        else:
+            return daily_counts
         finally:
             if mail:
                 await self.close_imap_connection(mail)
@@ -311,8 +315,8 @@ class EmailClient:
         for i, num in enumerate(message_ids[:MAX_EMAILS]):
             logging.debug(f"Fetching email {i+1}/{min(len(message_ids), MAX_EMAILS)}, ID: {num}")
 
-            def fetch_email() -> Any:
-                return mail.fetch(num, "(RFC822)")
+            def fetch_email(email_id: bytes = num) -> Any:
+                return mail.fetch(email_id.decode(), "(RFC822)")
 
             _, msg_data = await loop.run_in_executor(None, fetch_email)
             if msg_data and msg_data[0]:
@@ -394,6 +398,10 @@ class EmailClient:
             "content": body,
         }
 
+    def _raise_no_email_data_error(self) -> None:
+        """Raise error for no email data."""
+        raise EmailSearchError("No email data returned")
+
 
 # Create global email client instance
 email_client = EmailClient()
@@ -426,15 +434,15 @@ async def _handle_send_email(
             ]
 
     except ValueError as e:
-        return [types.TextContent(type="text", text=f"Invalid input: {str(e)}")]
+        return [types.TextContent(type="text", text=f"Invalid input: {e!s}")]
     except asyncio.TimeoutError:
-        logging.error("Operation timed out while sending email")
+        logging.exception("Operation timed out while sending email")
         return [types.TextContent(type="text", text="Operation timed out while sending email.")]
     except EmailSendError as e:
         return [
             types.TextContent(
                 type="text",
-                text=f"Failed to send email: {str(e)}\n\nPlease check:\n1. Email and password are correct in .env\n2. SMTP settings are correct\n3. Less secure app access is enabled (for Gmail)\n4. Using App Password if 2FA is enabled",
+                text=f"Failed to send email: {e!s}\n\nPlease check:\n1. Email and password are correct in .env\n2. SMTP settings are correct\n3. Less secure app access is enabled (for Gmail)\n4. Using App Password if 2FA is enabled",
             )
         ]
 
@@ -480,16 +488,16 @@ async def _handle_search_emails(
         return [types.TextContent(type="text", text=result_text)]
 
     except ValueError as e:
-        return [types.TextContent(type="text", text=f"Invalid input: {str(e)}")]
+        return [types.TextContent(type="text", text=f"Invalid input: {e!s}")]
     except asyncio.TimeoutError:
-        logging.error("Search operation timed out")
+        logging.exception("Search operation timed out")
         return [
             types.TextContent(
                 type="text", text="Search operation timed out. Please try with a more specific search criteria."
             )
         ]
     except EmailSearchError as e:
-        return [types.TextContent(type="text", text=f"Search failed: {str(e)}")]
+        return [types.TextContent(type="text", text=f"Search failed: {e!s}")]
 
 
 async def _handle_get_email_content(
@@ -504,20 +512,22 @@ async def _handle_get_email_content(
         async with asyncio.timeout(SEARCH_TIMEOUT):
             email_content = await email_client.get_email_content(email_id)
 
-        result_text = (
-            f"From: {email_content['from']}\n"
-            f"To: {email_content['to']}\n"
-            f"Date: {email_content['date']}\n"
-            f"Subject: {email_content['subject']}\n"
-            f"\nContent:\n{email_content['content']}"
-        )
-
-        return [types.TextContent(type="text", text=result_text)]
+        if email_content:
+            result_text = (
+                f"From: {email_content['from']}\n"
+                f"To: {email_content['to']}\n"
+                f"Date: {email_content['date']}\n"
+                f"Subject: {email_content['subject']}\n"
+                f"\nContent:\n{email_content['content']}"
+            )
+            return [types.TextContent(type="text", text=result_text)]
+        else:
+            return [types.TextContent(type="text", text="No email content found.")]
 
     except asyncio.TimeoutError:
         return [types.TextContent(type="text", text="Operation timed out while fetching email content.")]
     except EmailSearchError as e:
-        return [types.TextContent(type="text", text=f"Failed to get email content: {str(e)}")]
+        return [types.TextContent(type="text", text=f"Failed to get email content: {e!s}")]
 
 
 async def _handle_count_daily_emails(
@@ -550,9 +560,14 @@ async def _handle_count_daily_emails(
         return [types.TextContent(type="text", text=result_text)]
 
     except ValueError as e:
-        return [types.TextContent(type="text", text=f"Invalid date format: {str(e)}")]
+        return [types.TextContent(type="text", text=f"Invalid date format: {e!s}")]
     except EmailSearchError as e:
-        return [types.TextContent(type="text", text=f"Failed to count emails: {str(e)}")]
+        return [types.TextContent(type="text", text=f"Failed to count emails: {e!s}")]
+
+
+def _handle_unknown_tool(name: str) -> List[Union[types.TextContent, types.ImageContent, types.EmbeddedResource]]:
+    """Handle unknown tool error."""
+    raise ValueError(f"Unknown tool: {name}")
 
 
 @server.list_tools()  # type: ignore
@@ -672,10 +687,10 @@ async def handle_call_tool(
         elif name == "count-daily-emails":
             return await _handle_count_daily_emails(arguments)
         else:
-            raise ValueError(f"Unknown tool: {name}")
+            return _handle_unknown_tool(name)
     except Exception as e:
-        logging.error(f"Error in handle_call_tool for {name}: {str(e)}", exc_info=True)
-        return [types.TextContent(type="text", text=f"Error: {str(e)}")]
+        logging.error(f"Error in handle_call_tool for {name}: {e!s}", exc_info=True)
+        return [types.TextContent(type="text", text=f"Error: {e!s}")]
 
 
 async def main() -> None:
@@ -703,4 +718,4 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         logging.info("Server stopped by user")
     except Exception as e:
-        logging.error(f"Server crashed: {str(e)}", exc_info=True)
+        logging.error(f"Server crashed: {e!s}", exc_info=True)

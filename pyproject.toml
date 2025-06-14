@@ -14,6 +14,7 @@ dependencies = [
 dev = [
     "mypy>=1.11.0",
     "black>=24.4.0",
+    "ruff>=0.7.0",
     "types-python-dateutil",
 ]
 
@@ -32,3 +33,34 @@ target-version = ["py312"]
 python_version = "3.12"
 strict = true
 ignore_missing_imports = true
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "F",    # pyflakes
+    "I",    # isort
+    "N",    # pep8-naming
+    "B",    # flake8-bugbear
+    "A",    # flake8-builtins
+    "C4",   # flake8-comprehensions
+    "T20",  # flake8-print
+    "SIM",  # flake8-simplify
+    "ARG",  # flake8-unused-arguments
+    "PTH",  # flake8-use-pathlib
+    "PL",   # pylint
+    "TRY",  # tryceratops
+    "RUF",  # ruff-specific rules
+]
+ignore = [
+    "E501",   # line too long (handled by black)
+    "TRY003", # avoid specifying long messages outside exception class
+    "PLR0913", # too many arguments
+]
+
+[tool.ruff.lint.per-file-ignores]
+"__init__.py" = ["F401"]  # unused imports in __init__.py
