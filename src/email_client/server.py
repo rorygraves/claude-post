@@ -19,6 +19,7 @@ from .config import EMAIL_ADDRESS, EMAIL_PASSWORD, IMAP_SERVER, SMTP_PORT, SMTP_
 from .email_client import (
     SEARCH_TIMEOUT,
     EmailClient,
+    EmailDeletionError,
     EmailMessage,
     EmailSearchError,
     EmailSendError,

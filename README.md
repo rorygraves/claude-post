@@ -141,6 +141,66 @@ You can interact with your emails using natural language commands. Here are some
 
 Note: For security reasons, Claude will always show you the email details for confirmation before actually sending.
 
+## Testing
+
+The project includes an integration test suite that validates EmailClient functionality against real email servers. These tests are designed for manual execution, not continuous integration.
+
+### Running Integration Tests
+
+```bash
+# Make sure your .env file is configured with valid email credentials
+python run_integration_tests.py
+```
+
+### What the Tests Do
+
+The integration test suite performs the following validations:
+
+1. **Send Email Test**: Sends a test email with rich content to your configured email address
+2. **Search Emails Test**: Searches for emails using date ranges and keywords
+3. **Email Content Test**: Retrieves and validates full email content (10+ validation checks)
+4. **Daily Count Test**: Counts emails received on specific dates
+5. **Sent Folder Test**: Validates sent emails folder functionality
+6. **Move to Trash Test**: Moves test email to trash folder (safe cleanup)
+7. **Permanent Delete Test**: Tests permanent deletion functionality
+
+### Test Features
+
+- 🏷️ All test emails include `[TEST-EMAIL]` prefix for easy identification
+- 🔍 Unique timestamp IDs prevent conflicts between test runs
+- 📊 Clear pass/fail reporting with detailed output
+- 🧹 Test emails are moved to trash if tests pass (can be restored)
+- 📝 Comprehensive logging for debugging
+- ✅ 10+ content validation checks (special characters, Unicode, formatting)
+
+### Requirements for Testing
+
+- Valid `.env` file with working email credentials
+- Network access to your email servers (IMAP/SMTP)
+- Email account that can send emails to itself
+- Gmail users need app-specific passwords enabled
+
+### Example Test Output
+
+```
+📧 EmailClient Integration Test Suite
+=====================================
+🔄 Testing: Send email to self...
+✅ PASS: Send email to self
+🔄 Testing: Search emails for today...
+✅ PASS: Search today's emails
+    Found 15 emails for 2024-01-15
+✅ PASS: Get email content
+    All 10 validation checks passed
+✅ PASS: Move email to trash
+    Email successfully moved to trash (no longer in inbox)
+✅ PASS: Permanent delete email
+    Email was already moved to trash (expected)
+...
+Results: 8/8 tests passed
+🎉 ALL TESTS PASSED!
+```
+
 ## Project Structure
 
 ```
@@ -149,12 +209,16 @@ claude-post/
 ├── README.md
 ├── LICENSE
 ├── .env                    # Not included in repo
-├── .python-version        # Python version specification
-└── src/
-    └── email_client/
-        ├── __init__.py
-        ├── __main__.py
-        └── server.py       # Main implementation
+├── run_integration_tests.py # Test runner script
+├── src/
+│   └── email_client/
+│       ├── __init__.py
+│       ├── config.py       # Configuration management
+│       ├── email_client.py # Email operations
+│       └── server.py       # MCP server implementation
+└── tests/
+    ├── __init__.py
+    └── test_email_integration.py # Integration test suite
 ```
 
 ## Security Notes

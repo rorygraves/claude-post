@@ -54,6 +54,16 @@ class EmailSendError(Exception):
     pass
 
 
+class EmailDeletionError(Exception):
+    """Raised when email deletion operations fail.
+
+    This includes IMAP folder selection failures, message not found errors,
+    or deletion permission issues.
+    """
+
+    pass
+
+
 # Data Classes for Input Validation and Type Safety
 @dataclass
 class SearchCriteria:
@@ -311,6 +321,119 @@ class EmailClient:
         except Exception as e:
             logging.error(f"Error in send_email: {e!s}", exc_info=True)
             raise EmailSendError(f"Failed to send email: {e!s}") from e
+
+    async def delete_email(self, email_id: str, folder: str = "inbox", permanent: bool = False) -> None:
+        """Delete a specific email by moving to trash or permanently deleting.
+
+        Args:
+            email_id: The ID of the email to delete
+            folder: The folder containing the email ('inbox' or 'sent')
+            permanent: If True, permanently delete (mark + expunge). 
+                      If False (default), move to trash folder.
+
+        Raises:
+            EmailDeletionError: If the deletion operation fails
+            EmailConnectionError: If IMAP connection fails
+        """
+        if permanent:
+            await self._permanent_delete_email(email_id, folder)
+        else:
+            await self._move_email_to_trash(email_id, folder)
+
+    async def _permanent_delete_email(self, email_id: str, folder: str) -> None:
+        """Permanently delete an email by marking as deleted and expunging."""
+        mail = None
+        try:
+            mail = await self.connect_imap()
+            await self._select_folder(mail, folder)
+
+            # Mark email as deleted
+            logging.info(f"Permanently deleting email {email_id}")
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(None, lambda: mail.store(email_id, '+FLAGS', '\\Deleted'))
+
+            # Expunge to permanently delete
+            logging.info(f"Expunging deleted email {email_id}")
+            await loop.run_in_executor(None, mail.expunge)
+
+            logging.info(f"Successfully permanently deleted email {email_id}")
+
+        except Exception as e:
+            logging.error(f"Error in permanent delete: {e!s}", exc_info=True)
+            raise EmailDeletionError(f"Failed to permanently delete email {email_id}: {e!s}") from e
+        finally:
+            if mail:
+                await self.close_imap_connection(mail)
+
+    async def _move_email_to_trash(self, email_id: str, folder: str) -> None:
+        """Move an email to the trash folder."""
+        mail = None
+        try:
+            mail = await self.connect_imap()
+            await self._select_folder(mail, folder)
+
+            # Determine trash folder name
+            trash_folder = await self._get_trash_folder_name(mail)
+            
+            # Move email to trash (copy + mark deleted + expunge)
+            logging.info(f"Moving email {email_id} to trash folder: {trash_folder}")
+            loop = asyncio.get_event_loop()
+            
+            # Copy email to trash folder
+            await loop.run_in_executor(None, lambda: mail.copy(email_id, trash_folder))
+            
+            # Mark original email as deleted
+            await loop.run_in_executor(None, lambda: mail.store(email_id, '+FLAGS', '\\Deleted'))
+            
+            # Expunge to remove from current folder
+            await loop.run_in_executor(None, mail.expunge)
+
+            logging.info(f"Successfully moved email {email_id} to trash")
+
+        except Exception as e:
+            logging.error(f"Error moving to trash: {e!s}", exc_info=True)
+            raise EmailDeletionError(f"Failed to move email {email_id} to trash: {e!s}") from e
+        finally:
+            if mail:
+                await self.close_imap_connection(mail)
+
+    async def _select_folder(self, mail: imaplib.IMAP4_SSL, folder: str) -> None:
+        """Select the appropriate email folder."""
+        logging.info(f"Selecting folder: {folder}")
+        if folder == "sent":
+            result = mail.select('"[Gmail]/Sent Mail"')
+            logging.info(f"Selected sent folder, result: {result}")
+        else:
+            result = mail.select("inbox")
+            logging.info(f"Selected inbox, result: {result}")
+
+    async def _get_trash_folder_name(self, mail: imaplib.IMAP4_SSL) -> str:
+        """Determine the correct trash folder name for this email provider."""
+        # Try Gmail's common trash folder names
+        possible_trash_folders = [
+            '"[Gmail]/Bin"',      # Gmail in some locales
+            '"[Gmail]/Trash"',    # Gmail in other locales
+            '"Trash"',            # Standard IMAP
+            '"Deleted Items"',    # Outlook/Exchange
+            '"INBOX.Trash"'       # Some IMAP servers
+        ]
+        
+        loop = asyncio.get_event_loop()
+        
+        # List all folders to find the correct trash folder
+        _, folders = await loop.run_in_executor(None, mail.list)
+        folder_names = [folder.decode().split('"')[-2] for folder in folders if b'\\Trash' in folder or b'Bin' in folder]
+        
+        # Use the first trash folder found, or default to Gmail Bin
+        if folder_names:
+            trash_folder = f'"{folder_names[0]}"'
+            logging.info(f"Found trash folder: {trash_folder}")
+            return trash_folder
+        
+        # Default fallback
+        default_trash = '"[Gmail]/Bin"'
+        logging.info(f"Using default trash folder: {default_trash}")
+        return default_trash
 
     async def count_daily_emails(self, start_date: str, end_date: str) -> Dict[str, int]:
         """Count emails received for each day in the specified date range.
