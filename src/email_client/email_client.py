@@ -825,7 +825,31 @@ class EmailClient:
         return search_criteria
 
     async def _execute_search(self, mail: imaplib.IMAP4_SSL, search_criteria: str) -> List[Dict[str, str]]:
-        """Execute IMAP search and return formatted results."""
+        """Execute IMAP search and return formatted email summaries.
+
+        Performs an IMAP SEARCH command with the given criteria, fetches email headers
+        for matching messages (up to MAX_EMAILS limit), and formats them into a
+        standardized summary format for display.
+
+        Args:
+            mail: Active IMAP4_SSL connection with a folder already selected
+            search_criteria: IMAP search criteria string (e.g., 'SINCE "01-Jan-2024"',
+                           'SUBJECT "meeting"', or complex criteria with AND/OR operators)
+
+        Returns:
+            List of email summary dictionaries, each containing:
+            - 'id': Email message ID (string) - used for fetching full content later
+            - 'from': Sender email address and name (string)
+            - 'date': Email date header (string) - as received from server
+            - 'subject': Email subject line (string) - "No Subject" if missing
+
+            Returns empty list if no emails match the search criteria.
+            Limited to MAX_EMAILS (100) results for performance.
+
+        Note:
+            This method assumes the IMAP connection is already authenticated and
+            a folder has been selected. It fetches email headers only, not full content.
+        """
         loop = asyncio.get_event_loop()
 
         logging.debug(f"Executing IMAP search with criteria: {search_criteria}")
