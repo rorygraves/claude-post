@@ -231,23 +231,23 @@ class EmailClient:
         mail = None
         try:
             mail = await self.connect_imap()
-            
+
             logging.info("=== IMAP Server Capabilities ===")
-            
+
             # Query server capabilities
             typ, capability_data = mail.capability()
             if typ == 'OK' and capability_data:
                 capabilities = capability_data[0].decode('utf-8')
                 logging.info(f"Server capabilities: {capabilities}")
-                
+
                 # Parse and log interesting capabilities
                 cap_list = capabilities.split()
                 interesting_caps = [
-                    'IDLE', 'MOVE', 'QUOTA', 'NAMESPACE', 'UNSELECT', 
+                    'IDLE', 'MOVE', 'QUOTA', 'NAMESPACE', 'UNSELECT',
                     'UIDPLUS', 'CONDSTORE', 'QRESYNC', 'SORT', 'THREAD',
                     'COMPRESS', 'ENABLE', 'LIST-EXTENDED', 'SPECIAL-USE'
                 ]
-                
+
                 found_caps = [cap for cap in interesting_caps if cap in cap_list]
                 if found_caps:
                     logging.info(f"Notable capabilities: {', '.join(found_caps)}")
@@ -255,7 +255,7 @@ class EmailClient:
                     logging.info("No notable extended capabilities found")
             else:
                 logging.warning(f"Failed to query capabilities: {typ}")
-            
+
             # Query namespace information if supported
             if hasattr(mail, 'namespace'):
                 try:
@@ -264,10 +264,11 @@ class EmailClient:
                         logging.info(f"Namespace info: {namespace_data[0].decode('utf-8') if namespace_data[0] else 'None'}")
                 except Exception as e:
                     logging.debug(f"Namespace query failed (not supported): {e}")
-            
-            # Query server ID if supported  
+
+            # Query server ID if supported
             try:
-                typ, id_data = mail.send(b'ID NIL')
+                mail.send(b'ID NIL')
+                typ, id_data = mail.response('ID')
                 if typ == 'OK':
                     # Read the response
                     while True:
@@ -283,9 +284,9 @@ class EmailClient:
                             break
             except Exception as e:
                 logging.debug(f"Server ID query failed (not supported): {e}")
-            
+
             logging.info("=== End Server Capabilities ===")
-            
+
         except Exception as e:
             logging.error(f"Error querying server capabilities: {e!s}", exc_info=True)
         finally:
@@ -408,10 +409,10 @@ class EmailClient:
             ids_to_process = [email_ids]
         else:
             ids_to_process = email_ids
-            
+
         if not ids_to_process:
             raise EmailDeletionError("No email IDs provided for deletion")
-        
+
         # Process all emails in a single connection
         if permanent:
             await self._permanent_delete_emails(ids_to_process, folder)
@@ -427,11 +428,13 @@ class EmailClient:
 
             logging.info(f"Permanently deleting {len(email_ids)} emails")
             loop = asyncio.get_event_loop()
-            
+
             # Mark all emails as deleted
             for email_id in email_ids:
                 logging.debug(f"Marking email {email_id} as deleted")
-                await loop.run_in_executor(None, lambda id=email_id: mail.store(id, '+FLAGS', '\\Deleted'))
+                def mark_deleted(eid: str = email_id) -> tuple[str, list[bytes]]:
+                    return mail.store(eid, '+FLAGS', '\\Deleted')
+                await loop.run_in_executor(None, mark_deleted)
 
             # Single expunge operation to remove all marked emails
             logging.info(f"Expunging {len(email_ids)} deleted emails")
@@ -455,18 +458,22 @@ class EmailClient:
 
             # Determine trash folder name
             trash_folder = await self._get_trash_folder_name(mail)
-            
+
             logging.info(f"Moving {len(email_ids)} emails to trash folder: {trash_folder}")
             loop = asyncio.get_event_loop()
-            
+
             # Process all emails: copy to trash, mark as deleted
             for email_id in email_ids:
                 logging.debug(f"Moving email {email_id} to trash")
                 # Copy email to trash folder
-                await loop.run_in_executor(None, lambda id=email_id: mail.copy(id, trash_folder))
+                def copy_to_trash(eid: str = email_id) -> tuple[str, list[bytes | None]]:
+                    return mail.copy(eid, trash_folder)
+                await loop.run_in_executor(None, copy_to_trash)
                 # Mark original email as deleted
-                await loop.run_in_executor(None, lambda id=email_id: mail.store(id, '+FLAGS', '\\Deleted'))
-            
+                def mark_deleted(eid: str = email_id) -> tuple[str, list[bytes]]:
+                    return mail.store(eid, '+FLAGS', '\\Deleted')
+                await loop.run_in_executor(None, mark_deleted)
+
             # Single expunge operation to remove all emails from current folder
             await loop.run_in_executor(None, mail.expunge)
 
@@ -493,7 +500,7 @@ class EmailClient:
             EmailSearchError: If folder selection fails
         """
         logging.info(f"Selecting folder: {folder}")
-        
+
         # Handle special folder mappings for backwards compatibility
         folder_to_select = folder
         if folder.lower() == "inbox":
@@ -501,22 +508,22 @@ class EmailClient:
         elif folder.lower() == "sent":
             # Map 'sent' to Gmail's sent folder for backwards compatibility
             folder_to_select = "[Gmail]/Sent Mail"
-        
+
         try:
             # Select the folder (add quotes if not already quoted)
             if not (folder_to_select.startswith('"') and folder_to_select.endswith('"')):
                 quoted_folder = f'"{folder_to_select}"'
             else:
                 quoted_folder = folder_to_select
-                
+
             result = mail.select(quoted_folder)
             if result[0] != 'OK':
                 raise EmailSearchError(f"Failed to select folder {quoted_folder}: {result[1]}")
-                
+
             logging.info(f"Successfully selected folder {quoted_folder}, result: {result}")
-            
+
         except Exception as e:
-            logging.error(f"Error selecting folder {folder}: {e!s}")
+            logging.exception(f"Error selecting folder {folder}: {e!s}")
             raise EmailSearchError(f"Failed to select folder '{folder}': {e!s}") from e
 
     async def _get_trash_folder_name(self, mail: imaplib.IMAP4_SSL) -> str:
@@ -529,19 +536,27 @@ class EmailClient:
             '"Deleted Items"',    # Outlook/Exchange
             '"INBOX.Trash"'       # Some IMAP servers
         ]
-        
+
         loop = asyncio.get_event_loop()
-        
+
         # List all folders to find the correct trash folder
         _, folders = await loop.run_in_executor(None, mail.list)
-        folder_names = [folder.decode().split('"')[-2] for folder in folders if b'\\Trash' in folder or b'Bin' in folder]
-        
+        folder_names = []
+        if folders:
+            for folder in folders:
+                if isinstance(folder, bytes) and (b'\\Trash' in folder or b'Bin' in folder):
+                    try:
+                        folder_name = folder.decode().split('"')[-2]
+                        folder_names.append(folder_name)
+                    except (UnicodeDecodeError, IndexError):
+                        continue
+
         # Use the first trash folder found, or default to Gmail Bin
         if folder_names:
             trash_folder = f'"{folder_names[0]}"'
             logging.info(f"Found trash folder: {trash_folder}")
             return trash_folder
-        
+
         # Default fallback
         default_trash = '"[Gmail]/Bin"'
         logging.info(f"Using default trash folder: {default_trash}")
@@ -561,43 +576,49 @@ class EmailClient:
         mail = None
         try:
             mail = await self.connect_imap()
-            
+
             # List all folders
             logging.info("Listing all available IMAP folders")
             loop = asyncio.get_event_loop()
             _, folders = await loop.run_in_executor(None, mail.list)
-            
+
             folder_list = []
-            for folder_bytes in folders:
-                folder_str = folder_bytes.decode('utf-8')
-                # Parse IMAP LIST response: (attributes) "delimiter" "folder_name"
-                parts = folder_str.split('"')
-                if len(parts) >= 3:
-                    attributes = parts[0].strip('() ')
-                    folder_name = parts[-2]  # The quoted folder name
-                    
-                    # Create display name (remove Gmail prefixes for readability)
-                    display_name = folder_name
-                    if folder_name.startswith('[Gmail]/'):
-                        display_name = folder_name.replace('[Gmail]/', '')
-                    
-                    folder_info = {
-                        'name': folder_name,
-                        'display_name': display_name,
-                        'attributes': attributes
-                    }
-                    folder_list.append(folder_info)
-                    logging.debug(f"Found folder: {folder_info}")
-            
+            if folders:
+                for folder_bytes in folders:
+                    if not isinstance(folder_bytes, bytes):
+                        continue
+                    try:
+                        folder_str = folder_bytes.decode('utf-8')
+                    except UnicodeDecodeError:
+                        continue
+                    # Parse IMAP LIST response: (attributes) "delimiter" "folder_name"
+                    parts = folder_str.split('"')
+                    if len(parts) >= 3:
+                        attributes = parts[0].strip('() ')
+                        folder_name = parts[-2]  # The quoted folder name
+
+                        # Create display name (remove Gmail prefixes for readability)
+                        display_name = folder_name
+                        if folder_name.startswith('[Gmail]/'):
+                            display_name = folder_name.replace('[Gmail]/', '')
+
+                        folder_info = {
+                            'name': folder_name,
+                            'display_name': display_name,
+                            'attributes': attributes
+                        }
+                        folder_list.append(folder_info)
+                        logging.debug(f"Found folder: {folder_info}")
+
             # Sort folders for consistent ordering (inbox first, then alphabetical)
             folder_list.sort(key=lambda x: (
                 x['name'].lower() != 'inbox',  # inbox first
                 x['display_name'].lower()
             ))
-            
+
             logging.info(f"Successfully listed {len(folder_list)} folders")
             return folder_list
-            
+
         except Exception as e:
             logging.error(f"Error listing folders: {e!s}", exc_info=True)
             raise EmailSearchError(f"Failed to list folders: {e!s}") from e
@@ -622,10 +643,10 @@ class EmailClient:
             ids_to_process = [email_ids]
         else:
             ids_to_process = email_ids
-            
+
         if not ids_to_process:
             raise EmailDeletionError("No email IDs provided for moving")
-        
+
         await self._move_emails_batch(ids_to_process, source_folder, destination_folder)
 
     async def _move_emails_batch(self, email_ids: List[str], source_folder: str, destination_folder: str) -> None:
@@ -633,29 +654,33 @@ class EmailClient:
         mail = None
         try:
             mail = await self.connect_imap()
-            
+
             # Select the source folder
             await self._select_folder(mail, source_folder)
-            
+
             # Validate destination folder by checking if it exists
             await self._validate_destination_folder(mail, destination_folder)
-            
+
             # Ensure destination folder is properly quoted
             quoted_dest = destination_folder
             if not (destination_folder.startswith('"') and destination_folder.endswith('"')):
                 quoted_dest = f'"{destination_folder}"'
-            
+
             logging.info(f"Moving {len(email_ids)} emails from '{source_folder}' to '{destination_folder}'")
             loop = asyncio.get_event_loop()
-            
+
             # Process all emails: copy to destination, mark as deleted
             for email_id in email_ids:
                 logging.debug(f"Moving email {email_id}")
                 # Copy email to destination folder
-                await loop.run_in_executor(None, lambda id=email_id: mail.copy(id, quoted_dest))
+                def copy_to_dest(eid: str = email_id) -> tuple[str, list[bytes | None]]:
+                    return mail.copy(eid, quoted_dest)
+                await loop.run_in_executor(None, copy_to_dest)
                 # Mark original email as deleted
-                await loop.run_in_executor(None, lambda id=email_id: mail.store(id, '+FLAGS', '\\Deleted'))
-            
+                def mark_deleted(eid: str = email_id) -> tuple[str, list[bytes]]:
+                    return mail.store(eid, '+FLAGS', '\\Deleted')
+                await loop.run_in_executor(None, mark_deleted)
+
             # Single expunge operation to remove all moved emails from source folder
             await loop.run_in_executor(None, mail.expunge)
 
@@ -682,27 +707,33 @@ class EmailClient:
             # List all folders to check if destination exists
             loop = asyncio.get_event_loop()
             _, folders = await loop.run_in_executor(None, mail.list)
-            
+
             # Check if folder exists (handle both quoted and unquoted names)
             folder_exists = False
-            for folder_bytes in folders:
-                folder_str = folder_bytes.decode('utf-8')
-                # Extract folder name from IMAP LIST response
-                if '"' in folder_str:
-                    listed_folder = folder_str.split('"')[-2]
-                    if listed_folder == folder_name or f'"{listed_folder}"' == folder_name:
-                        folder_exists = True
-                        break
-            
+            if folders:
+                for folder_bytes in folders:
+                    if not isinstance(folder_bytes, bytes):
+                        continue
+                    try:
+                        folder_str = folder_bytes.decode('utf-8')
+                    except UnicodeDecodeError:
+                        continue
+                    # Extract folder name from IMAP LIST response
+                    if '"' in folder_str:
+                        listed_folder = folder_str.split('"')[-2]
+                        if listed_folder == folder_name or f'"{listed_folder}"' == folder_name:
+                            folder_exists = True
+                            break
+
             if not folder_exists:
                 raise EmailDeletionError(f"Destination folder '{folder_name}' does not exist")
-                
+
             logging.info(f"Validated destination folder: {folder_name}")
-            
+
         except EmailDeletionError:
             raise  # Re-raise our custom error
         except Exception as e:
-            logging.error(f"Error validating folder {folder_name}: {e!s}")
+            logging.exception(f"Error validating folder {folder_name}: {e!s}")
             raise EmailDeletionError(f"Failed to validate destination folder '{folder_name}': {e!s}") from e
 
     async def count_daily_emails(self, start_date: str, end_date: str) -> Dict[str, int]:
@@ -868,17 +899,17 @@ class EmailClient:
         logging.info(f"Found {len(message_ids)} messages, fetching up to {MAX_EMAILS}")
 
         limited_message_ids = message_ids[:MAX_EMAILS]
-        
+
         if not limited_message_ids:
             return []
-        
+
         # Create comma-separated list of message IDs for batch fetch
         message_set = b','.join(limited_message_ids).decode()
         logging.debug(f"Batch fetching {len(limited_message_ids)} emails with message set: {message_set}")
-        
+
         # Fetch all emails in a single IMAP command for efficiency
         _, msg_data_list = await loop.run_in_executor(None, lambda: mail.fetch(message_set, "(RFC822)"))
-        
+
         # Process the batch response into email summaries
         email_list = []
         if msg_data_list:
@@ -889,7 +920,7 @@ class EmailClient:
                     except Exception as e:
                         logging.warning(f"Failed to format email summary: {e!s}")
                         continue
-        
+
         logging.info(f"Successfully processed {len(email_list)} emails from batch fetch")
         return email_list
 
