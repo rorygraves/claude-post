@@ -109,7 +109,7 @@ class EmailMessage:
             raise ValueError("Email content cannot be empty")
 
 
-server = Server("email")
+server: Any = Server("email")
 
 
 class EmailClient:
