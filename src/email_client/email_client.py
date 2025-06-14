@@ -828,8 +828,8 @@ class EmailClient:
         """Execute IMAP search and return formatted email summaries.
 
         Performs an IMAP SEARCH command with the given criteria, fetches email headers
-        for matching messages (up to MAX_EMAILS limit), and formats them into a
-        standardized summary format for display.
+        for matching messages (up to MAX_EMAILS limit) using efficient batch fetching,
+        and formats them into a standardized summary format for display.
 
         Args:
             mail: Active IMAP4_SSL connection with a folder already selected
@@ -845,6 +845,10 @@ class EmailClient:
 
             Returns empty list if no emails match the search criteria.
             Limited to MAX_EMAILS (100) results for performance.
+
+        Performance:
+            Uses batch FETCH with comma-separated message IDs for efficiency,
+            reducing network round-trips compared to individual fetch operations.
 
         Note:
             This method assumes the IMAP connection is already authenticated and
@@ -863,18 +867,30 @@ class EmailClient:
         message_ids = messages[0].split()
         logging.info(f"Found {len(message_ids)} messages, fetching up to {MAX_EMAILS}")
 
-        email_list = []
         limited_message_ids = message_ids[:MAX_EMAILS]
-        for i, num in enumerate(limited_message_ids):
-            logging.debug(f"Fetching email {i+1}/{len(limited_message_ids)}, ID: {num}")
-
-            def fetch_email(email_id: bytes = num) -> Any:
-                return mail.fetch(email_id.decode(), "(RFC822)")
-
-            _, msg_data = await loop.run_in_executor(None, fetch_email)
-            if msg_data and msg_data[0]:
-                email_list.append(self._format_email_summary((msg_data[0],)))
-
+        
+        if not limited_message_ids:
+            return []
+        
+        # Create comma-separated list of message IDs for batch fetch
+        message_set = b','.join(limited_message_ids).decode()
+        logging.debug(f"Batch fetching {len(limited_message_ids)} emails with message set: {message_set}")
+        
+        # Fetch all emails in a single IMAP command for efficiency
+        _, msg_data_list = await loop.run_in_executor(None, lambda: mail.fetch(message_set, "(RFC822)"))
+        
+        # Process the batch response into email summaries
+        email_list = []
+        if msg_data_list:
+            for msg_data in msg_data_list:
+                if msg_data and len(msg_data) >= 2:  # Ensure we have both ID and content
+                    try:
+                        email_list.append(self._format_email_summary((msg_data,)))
+                    except Exception as e:
+                        logging.warning(f"Failed to format email summary: {e!s}")
+                        continue
+        
+        logging.info(f"Successfully processed {len(email_list)} emails from batch fetch")
         return email_list
 
     async def _send_via_smtp(
