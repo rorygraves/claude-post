@@ -218,7 +218,9 @@ class EmailClient:
     async def close_imap_connection(self, mail: imaplib.IMAP4_SSL) -> None:
         """Safely close IMAP connection."""
         try:
-            mail.close()
+            # Only call close() if we're in SELECTED state (folder is selected)
+            if hasattr(mail, 'state') and mail.state == 'SELECTED':
+                mail.close()
             mail.logout()
             logging.info("IMAP connection closed")
         except Exception as e:
@@ -269,10 +271,13 @@ class EmailClient:
                 if typ == 'OK':
                     # Read the response
                     while True:
-                        typ, data = mail.response('ID')
+                        response = mail.response('ID')
+                        if not response or len(response) != 2:
+                            break
+                        typ, data = response
                         if typ != 'OK' or not data:
                             break
-                        if data[0]:
+                        if data and data[0]:
                             server_id = data[0].decode('utf-8')
                             logging.info(f"Server ID: {server_id}")
                             break
