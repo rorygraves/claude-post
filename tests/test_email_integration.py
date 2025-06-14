@@ -273,8 +273,65 @@ This email can be safely deleted after the integration test completes.
             self.log_result("List folders", False, f"Error: {e}")
             return False
 
+    async def test_move_email(self, email_id: str) -> bool:
+        """Test 7: Move test email to a different folder (if available)."""
+        print("\n🔄 Testing: Move email to different folder...")
+        
+        try:
+            # First, get available folders to find a suitable destination
+            folders = await self.client.list_folders()
+            
+            # Find a suitable destination folder (prefer Drafts, Archive, or any non-inbox folder)
+            destination_folder = None
+            preferred_folders = ['Drafts', '[Gmail]/Drafts', 'Archive', '[Gmail]/All Mail']
+            
+            # Look for preferred folders first
+            for folder in folders:
+                if folder['name'] in preferred_folders or folder['display_name'] in ['Drafts', 'All Mail', 'Archive']:
+                    destination_folder = folder['name']
+                    break
+            
+            # If no preferred folder found, use any non-inbox folder
+            if not destination_folder:
+                for folder in folders:
+                    if folder['name'].lower() not in ['inbox', 'INBOX'] and 'Trash' not in folder['name'] and 'Bin' not in folder['name']:
+                        destination_folder = folder['name']
+                        break
+            
+            if not destination_folder:
+                self.log_result("Move email", False, "No suitable destination folder found (need non-inbox folder)")
+                return False
+            
+            # Move the email from inbox to destination folder
+            await self.client.move_email(email_id, "inbox", destination_folder)
+            
+            # Wait a moment for move to complete
+            await asyncio.sleep(2)
+            
+            # Verify email is no longer in inbox by trying to get content
+            try:
+                content = await self.client.get_email_content(email_id)
+                if content:
+                    self.log_result("Move email", False, 
+                                  f"Email still accessible in inbox after move to {destination_folder}")
+                    return False
+                else:
+                    self.log_result("Move email", True, 
+                                  f"Email successfully moved to {destination_folder} (no longer in inbox)")
+                    return True
+                    
+            except Exception:
+                # If getting content fails, that's expected after moving
+                self.log_result("Move email", True, 
+                              f"Email successfully moved to {destination_folder} (no longer accessible in inbox)")
+                return True
+                
+        except Exception as e:
+            self.log_result("Move email", False, f"Error: {e}")
+            return False
+
     async def test_delete_email_to_trash(self, email_id: str) -> bool:
-        """Test 8a: Move test email to trash (default deletion behavior)."""
+        """Test 9a: Move test email to trash (default deletion behavior)."""
         print("\n🔄 Testing: Move test email to trash...")
         
         try:
@@ -310,7 +367,7 @@ This email can be safely deleted after the integration test completes.
             return False
 
     async def test_delete_email_permanent(self, email_id: str) -> bool:
-        """Test 8b: Permanently delete test email (if still accessible)."""
+        """Test 9b: Permanently delete test email (if still accessible)."""
         print("\n🔄 Testing: Permanently delete test email...")
         
         try:
@@ -394,10 +451,17 @@ This email can be safely deleted after the integration test completes.
         # Test 6: List available folders
         await self.test_list_folders()
         
-        # Test 7: Search sent emails
+        # Test 7: Test email moving (only if we found test email and have folders)
+        if test_email_id and content_test_passed:
+            await self.test_move_email(test_email_id)
+        else:
+            reason = "test email not found" if not test_email_id else "content validation failed"
+            self.log_result("Move email", False, f"Skipped - {reason}")
+        
+        # Test 8: Search sent emails
         await self.test_search_sent_emails()
         
-        # Test 8a: Move test email to trash (only if we found it and content test passed)
+        # Test 9a: Move test email to trash (only if we found it and content test passed)
         if test_email_id and content_test_passed:
             trash_test_passed = await self.test_delete_email_to_trash(test_email_id)
         else:
@@ -405,7 +469,7 @@ This email can be safely deleted after the integration test completes.
             self.log_result("Move email to trash", False, f"Skipped - {reason}")
             trash_test_passed = False
         
-        # Test 8b: Try permanent deletion (only if previous tests passed)
+        # Test 9b: Try permanent deletion (only if previous tests passed)
         if test_email_id and content_test_passed and not trash_test_passed:
             # Only test permanent deletion if trash move failed (email still in inbox)
             await self.test_delete_email_permanent(test_email_id)

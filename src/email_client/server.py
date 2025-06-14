@@ -263,6 +263,39 @@ async def _handle_list_folders(
         return [types.TextContent(type="text", text=f"Unexpected error: {e!s}")]
 
 
+async def _handle_move_email(
+    arguments: Dict[str, Any],
+) -> List[Union[types.TextContent, types.ImageContent, types.EmbeddedResource]]:
+    """Handle move-email tool to move emails between folders."""
+    email_id = arguments.get("email_id")
+    source_folder = arguments.get("source_folder", "inbox")
+    destination_folder = arguments.get("destination_folder")
+    
+    # Validate required parameters
+    if not email_id:
+        return [types.TextContent(type="text", text="Email ID is required.")]
+    
+    if not destination_folder:
+        return [types.TextContent(type="text", text="Destination folder is required.")]
+    
+    try:
+        await email_client.move_email(email_id, source_folder, destination_folder)
+        
+        result_text = (
+            f"Successfully moved email {email_id} from '{source_folder}' to '{destination_folder}'.\n"
+            f"The email is no longer in the source folder and can now be found in the destination folder."
+        )
+        
+        logging.info(f"Successfully moved email {email_id} via MCP tool")
+        return [types.TextContent(type="text", text=result_text)]
+        
+    except EmailDeletionError as e:
+        return [types.TextContent(type="text", text=f"Failed to move email: {e!s}")]
+    except Exception as e:
+        logging.error(f"Unexpected error in move email: {e!s}", exc_info=True)
+        return [types.TextContent(type="text", text=f"Unexpected error: {e!s}")]
+
+
 def _handle_unknown_tool(name: str) -> List[Union[types.TextContent, types.ImageContent, types.EmbeddedResource]]:
     """Handle unknown tool error."""
     raise ValueError(f"Unknown tool: {name}")
@@ -368,6 +401,28 @@ async def handle_list_tools() -> List[types.Tool]:
                 "properties": {},
             },
         ),
+        types.Tool(
+            name="move-email",
+            description="Move an email from one folder to another",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "email_id": {
+                        "type": "string",
+                        "description": "The ID of the email to move",
+                    },
+                    "source_folder": {
+                        "type": "string",
+                        "description": "Source folder containing the email (defaults to 'inbox')",
+                    },
+                    "destination_folder": {
+                        "type": "string",
+                        "description": "Destination folder to move the email to (use 'list-folders' to see options)",
+                    },
+                },
+                "required": ["email_id", "destination_folder"],
+            },
+        ),
     ]
 
 
@@ -393,6 +448,8 @@ async def handle_call_tool(
             return await _handle_count_daily_emails(arguments)
         elif name == "list-folders":
             return await _handle_list_folders(arguments)
+        elif name == "move-email":
+            return await _handle_move_email(arguments)
         else:
             return _handle_unknown_tool(name)
     except Exception as e:

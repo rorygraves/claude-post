@@ -18,9 +18,10 @@ The tests will:
 3. Retrieve and validate email content (comprehensive validation)
 4. Count daily emails
 5. List available email folders
-6. Test sent folder functionality
-7. Move test email to trash (safe cleanup)
-8. Test permanent deletion (if needed)
+6. Test moving emails between folders
+7. Test sent folder functionality
+8. Move test email to trash (safe cleanup)
+9. Test permanent deletion (if needed)
 
 All test emails are marked with "[TEST-EMAIL]" and moved to trash if tests pass.
 """
@@ -82,6 +83,7 @@ def print_banner():
     print("• Retrieving and validating email content (comprehensive validation)")
     print("• Testing daily email counting")
     print("• Listing available email folders")
+    print("• Testing email moving between folders")
     print("• Validating sent folder functionality")
     print("• Moving test emails to trash (safe cleanup)")
     print()

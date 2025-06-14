@@ -523,6 +523,92 @@ class EmailClient:
             if mail:
                 await self.close_imap_connection(mail)
 
+    async def move_email(self, email_id: str, source_folder: str, destination_folder: str) -> None:
+        """Move an email from one folder to another.
+
+        Args:
+            email_id: The ID of the email to move
+            source_folder: The folder containing the email (e.g., 'inbox', 'INBOX')
+            destination_folder: The destination folder (e.g., 'Archive', '[Gmail]/Important')
+
+        Raises:
+            EmailDeletionError: If the move operation fails (reusing existing exception)
+            EmailConnectionError: If IMAP connection fails
+        """
+        mail = None
+        try:
+            mail = await self.connect_imap()
+            
+            # Select the source folder
+            await self._select_folder(mail, source_folder)
+            
+            # Validate destination folder by checking if it exists
+            await self._validate_destination_folder(mail, destination_folder)
+            
+            # Move email using COPY + STORE + EXPUNGE
+            logging.info(f"Moving email {email_id} from '{source_folder}' to '{destination_folder}'")
+            loop = asyncio.get_event_loop()
+            
+            # Ensure destination folder is properly quoted
+            quoted_dest = destination_folder
+            if not (destination_folder.startswith('"') and destination_folder.endswith('"')):
+                quoted_dest = f'"{destination_folder}"'
+            
+            # Copy email to destination folder
+            await loop.run_in_executor(None, lambda: mail.copy(email_id, quoted_dest))
+            
+            # Mark original email as deleted
+            await loop.run_in_executor(None, lambda: mail.store(email_id, '+FLAGS', '\\Deleted'))
+            
+            # Expunge to remove from source folder
+            await loop.run_in_executor(None, mail.expunge)
+
+            logging.info(f"Successfully moved email {email_id} from '{source_folder}' to '{destination_folder}'")
+
+        except Exception as e:
+            logging.error(f"Error moving email: {e!s}", exc_info=True)
+            raise EmailDeletionError(f"Failed to move email {email_id} from '{source_folder}' to '{destination_folder}': {e!s}") from e
+        finally:
+            if mail:
+                await self.close_imap_connection(mail)
+
+    async def _validate_destination_folder(self, mail: imaplib.IMAP4_SSL, folder_name: str) -> None:
+        """Validate that a destination folder exists.
+        
+        Args:
+            mail: Active IMAP connection
+            folder_name: Folder name to validate
+            
+        Raises:
+            EmailDeletionError: If folder doesn't exist
+        """
+        try:
+            # List all folders to check if destination exists
+            loop = asyncio.get_event_loop()
+            _, folders = await loop.run_in_executor(None, mail.list)
+            
+            # Check if folder exists (handle both quoted and unquoted names)
+            folder_exists = False
+            for folder_bytes in folders:
+                folder_str = folder_bytes.decode('utf-8')
+                # Extract folder name from IMAP LIST response
+                if '"' in folder_str:
+                    listed_folder = folder_str.split('"')[-2]
+                    if listed_folder == folder_name or f'"{listed_folder}"' == folder_name:
+                        folder_exists = True
+                        break
+            
+            if not folder_exists:
+                raise EmailDeletionError(f"Destination folder '{folder_name}' does not exist")
+                
+            logging.info(f"Validated destination folder: {folder_name}")
+            
+        except EmailDeletionError:
+            raise  # Re-raise our custom error
+        except Exception as e:
+            logging.error(f"Error validating folder {folder_name}: {e!s}")
+            raise EmailDeletionError(f"Failed to validate destination folder '{folder_name}': {e!s}") from e
+
     async def count_daily_emails(self, start_date: str, end_date: str) -> Dict[str, int]:
         """Count emails received for each day in the specified date range.
 

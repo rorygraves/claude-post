@@ -161,9 +161,10 @@ The integration test suite performs the following validations:
 3. **Email Content Test**: Retrieves and validates full email content (10+ validation checks)
 4. **Daily Count Test**: Counts emails received on specific dates
 5. **List Folders Test**: Discovers all available email folders
-6. **Sent Folder Test**: Validates sent emails folder functionality
-7. **Move to Trash Test**: Moves test email to trash folder (safe cleanup)
-8. **Permanent Delete Test**: Tests permanent deletion functionality
+6. **Move Email Test**: Tests moving emails between folders
+7. **Sent Folder Test**: Validates sent emails folder functionality
+8. **Move to Trash Test**: Moves test email to trash folder (safe cleanup)
+9. **Permanent Delete Test**: Tests permanent deletion functionality
 
 ### Test Features
 
@@ -195,12 +196,14 @@ The integration test suite performs the following validations:
     All 10 validation checks passed
 ✅ PASS: List folders
     Found 12 folders including inbox
+✅ PASS: Move email
+    Email successfully moved to [Gmail]/Drafts (no longer in inbox)
 ✅ PASS: Move email to trash
     Email successfully moved to trash (no longer in inbox)
 ✅ PASS: Permanent delete email
     Email was already moved to trash (expected)
 ...
-Results: 9/9 tests passed
+Results: 10/10 tests passed
 🎉 ALL TESTS PASSED!
 ```
 
