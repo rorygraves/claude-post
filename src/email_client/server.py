@@ -17,7 +17,7 @@ import mcp.server.stdio
 # Configure logging
 logging.basicConfig(
     level=logging.DEBUG,
-    format='%(asctime)s - %(levelname)s - %(message)s',
+    format='%(asctime)s - %(levelname)s - %(funcName)s:%(lineno)d - %(message)s',
     filename='email_client.log'
 )
 
@@ -32,6 +32,12 @@ EMAIL_CONFIG = {
     "smtp_server": os.getenv("SMTP_SERVER", "smtp.gmail.com"),
     "smtp_port": int(os.getenv("SMTP_PORT", "587"))
 }
+
+logging.info("=== Email Client Server Starting ===")
+logging.info(f"Email configured: {EMAIL_CONFIG['email']}")
+logging.info(f"IMAP server: {EMAIL_CONFIG['imap_server']}")
+logging.info(f"SMTP server: {EMAIL_CONFIG['smtp_server']}:{EMAIL_CONFIG['smtp_port']}")
+logging.info(f"Password configured: {'Yes' if EMAIL_CONFIG['password'] != 'your-app-specific-password' else 'No'}")
 
 # Constants
 SEARCH_TIMEOUT = 60  # seconds
@@ -82,17 +88,27 @@ async def search_emails_async(mail: imaplib.IMAP4_SSL, search_criteria: str) -> 
     """Asynchronously search emails with timeout."""
     loop = asyncio.get_event_loop()
     try:
+        logging.debug(f"Executing IMAP search with criteria: {search_criteria}")
         _, messages = await loop.run_in_executor(None, lambda: mail.search(None, search_criteria))
+        logging.debug(f"Search result: {messages}")
+        
         if not messages[0]:
+            logging.info("No messages found matching criteria")
             return []
-            
+        
+        message_ids = messages[0].split()
+        logging.info(f"Found {len(message_ids)} messages, fetching up to {MAX_EMAILS}")
+        
         email_list = []
-        for num in messages[0].split()[:MAX_EMAILS]:  # Limit to MAX_EMAILS
+        for i, num in enumerate(message_ids[:MAX_EMAILS]):  # Limit to MAX_EMAILS
+            logging.debug(f"Fetching email {i+1}/{min(len(message_ids), MAX_EMAILS)}, ID: {num}")
             _, msg_data = await loop.run_in_executor(None, lambda: mail.fetch(num, '(RFC822)'))
             email_list.append(format_email_summary(msg_data))
             
+        logging.info(f"Successfully fetched {len(email_list)} emails")
         return email_list
     except Exception as e:
+        logging.error(f"Error in search_emails_async: {str(e)}", exc_info=True)
         raise Exception(f"Error searching emails: {str(e)}")
 
 async def get_email_content_async(mail: imaplib.IMAP4_SSL, email_id: str) -> dict:
@@ -271,6 +287,9 @@ async def handle_call_tool(
     if not arguments:
         arguments = {}
     
+    logging.info(f"=== Tool Call: {name} ===")
+    logging.info(f"Arguments: {arguments}")
+    
     try:
         if name == "send-email":
             to_addresses = arguments.get("to", [])
@@ -311,61 +330,93 @@ async def handle_call_tool(
                 )]
         
         # Connect to IMAP server using predefined credentials
-        mail = imaplib.IMAP4_SSL(EMAIL_CONFIG["imap_server"])
-        mail.login(EMAIL_CONFIG["email"], EMAIL_CONFIG["password"])
+        logging.info(f"Connecting to IMAP server: {EMAIL_CONFIG['imap_server']}")
+        logging.info(f"Using email: {EMAIL_CONFIG['email']}")
+        
+        try:
+            mail = imaplib.IMAP4_SSL(EMAIL_CONFIG["imap_server"])
+            logging.info("IMAP SSL connection established")
+            
+            mail.login(EMAIL_CONFIG["email"], EMAIL_CONFIG["password"])
+            logging.info("IMAP login successful")
+        except Exception as e:
+            logging.error(f"IMAP connection/login failed: {str(e)}")
+            raise
         
         if name == "search-emails":
             # 选择文件夹
             folder = arguments.get("folder", "inbox")  # 默认选择收件箱
-            if folder == "sent":
-                mail.select('"[Gmail]/Sent Mail"')  # 对于 Gmail
-            else:
-                mail.select("inbox")
+            logging.info(f"Selecting folder: {folder}")
+            
+            try:
+                if folder == "sent":
+                    result = mail.select('"[Gmail]/Sent Mail"')  # 对于 Gmail
+                    logging.info(f"Selected sent folder, result: {result}")
+                else:
+                    result = mail.select("inbox")
+                    logging.info(f"Selected inbox, result: {result}")
+            except Exception as e:
+                logging.error(f"Failed to select folder: {str(e)}")
+                raise
             
             # Get optional parameters
-            start_date = arguments.get("start_date")
-            end_date = arguments.get("end_date")
+            start_date_str = arguments.get("start_date")
+            end_date_str = arguments.get("end_date")
             keyword = arguments.get("keyword")
             
-            # If no dates provided, default to last 7 days
-            if not start_date:
-                start_date = datetime.now() - timedelta(days=7)
-                start_date = start_date.strftime("%d-%b-%Y")
+            logging.info(f"Raw parameters - start_date: {start_date_str}, end_date: {end_date_str}, keyword: {keyword}")
+            
+            # Set default dates if not provided
+            if not start_date_str:
+                start_date_dt = datetime.now() - timedelta(days=7)
+                logging.info(f"No start_date provided, using default: {start_date_dt.strftime('%Y-%m-%d')}")
             else:
-                start_date = datetime.strptime(start_date, "%Y-%m-%d").strftime("%d-%b-%Y")
-                
-            if not end_date:
-                end_date = datetime.now().strftime("%d-%b-%Y")
+                start_date_dt = datetime.strptime(start_date_str, "%Y-%m-%d")
+                logging.info(f"Parsed start_date: {start_date_str}")
+            
+            if not end_date_str:
+                end_date_dt = datetime.now()
+                logging.info(f"No end_date provided, using today: {end_date_dt.strftime('%Y-%m-%d')}")
             else:
-                # Convert end_date to datetime object once
-                end_date_obj = datetime.strptime(end_date, "%Y-%m-%d")
-                end_date = end_date_obj.strftime("%d-%b-%Y")
+                end_date_dt = datetime.strptime(end_date_str, "%Y-%m-%d")
+                logging.info(f"Parsed end_date: {end_date_str}")
+
+            # Format dates for IMAP search (e.g., "01-Jan-2023")
+            imap_start_date = start_date_dt.strftime("%d-%b-%Y")
+            imap_end_date = end_date_dt.strftime("%d-%b-%Y")
+            logging.info(f"IMAP formatted dates - start: {imap_start_date}, end: {imap_end_date}")
             
             # Build search criteria
-            if start_date == end_date:
+            if start_date_dt.date() == end_date_dt.date():
                 # If searching for a single day
-                search_criteria = f'ON "{start_date}"'
+                search_criteria = f'ON "{imap_start_date}"'
+                logging.info(f"Single day search: {search_criteria}")
             else:
-                # Calculate next day using the already converted end_date_obj
-                next_day = (end_date_obj + timedelta(days=1)).strftime("%d-%b-%Y")
-                search_criteria = f'SINCE "{start_date}" BEFORE "{next_day}"'
+                # Include the end date by searching until the day after
+                imap_next_day_after_end = (end_date_dt + timedelta(days=1)).strftime("%d-%b-%Y")
+                search_criteria = f'SINCE "{imap_start_date}" BEFORE "{imap_next_day_after_end}"'
+                logging.info(f"Date range search: {search_criteria}")
                 
             if keyword:
-                # Fix: Properly combine keyword search with date criteria
+                # Properly combine keyword search with date criteria
                 keyword_criteria = f'(OR SUBJECT "{keyword}" BODY "{keyword}")'
                 search_criteria = f'({keyword_criteria} {search_criteria})'
+                logging.info(f"Added keyword search, final criteria: {search_criteria}")
             
-            logging.debug(f"Search criteria: {search_criteria}")  # Add debug logging
+            logging.info(f"Final search criteria: {search_criteria}")
             
             try:
                 async with asyncio.timeout(SEARCH_TIMEOUT):
                     email_list = await search_emails_async(mail, search_criteria)
                     
                 if not email_list:
+                    logging.info("No emails found matching the criteria")
                     return [types.TextContent(
                         type="text",
                         text="No emails found matching the criteria."
                     )]
+                
+                logging.info(f"Formatting {len(email_list)} emails for display")
                 
                 # Format the results as a table
                 result_text = "Found emails:\n\n"
@@ -377,16 +428,21 @@ async def handle_call_tool(
                 
                 result_text += "\nUse get-email-content with an email ID to view the full content of a specific email."
                 
+                logging.info("Successfully returned search results")
                 return [types.TextContent(
                     type="text",
                     text=result_text
                 )]
                 
             except asyncio.TimeoutError:
+                logging.error("Search operation timed out")
                 return [types.TextContent(
                     type="text",
                     text="Search operation timed out. Please try with a more specific search criteria."
                 )]
+            except Exception as e:
+                logging.error(f"Unexpected error during search: {str(e)}", exc_info=True)
+                raise
                 
         elif name == "get-email-content":
             email_id = arguments.get("email_id")
@@ -450,20 +506,25 @@ async def handle_call_tool(
             raise ValueError(f"Unknown tool: {name}")
             
     except Exception as e:
+        logging.error(f"Error in handle_call_tool for {name}: {str(e)}", exc_info=True)
         return [types.TextContent(
             type="text",
             text=f"Error: {str(e)}"
         )]
     finally:
         try:
-            mail.close()
-            mail.logout()
-        except:
-            pass
+            if 'mail' in locals():
+                mail.close()
+                mail.logout()
+                logging.info("IMAP connection closed")
+        except Exception as e:
+            logging.warning(f"Error closing IMAP connection: {str(e)}")
 
 async def main():
+    logging.info("Starting MCP server main function")
     # Run the server using stdin/stdout streams
     async with mcp.server.stdio.stdio_server() as (read_stream, write_stream):
+        logging.info("stdio server created, starting server.run")
         await server.run(
             read_stream,
             write_stream,
@@ -478,5 +539,10 @@ async def main():
         )
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        logging.info("Server stopped by user")
+    except Exception as e:
+        logging.error(f"Server crashed: {str(e)}", exc_info=True)
 

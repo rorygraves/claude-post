@@ -21,7 +21,7 @@ wheels/
 *.egg
 
 # Virtual Environment
-.env
+
 .venv
 env/
 venv/
@@ -41,10 +41,10 @@ email_client.log
 .env
 .env.local
 .env.*.local
-
 # Test files
 test.py
 
 # OS
 .DS_Store
 Thumbs.db
+CLAUDE.md
