@@ -24,20 +24,18 @@ logging.basicConfig(
 # Load environment variables from .env file
 load_dotenv()
 
-# Email configuration
-EMAIL_CONFIG: Dict[str, Union[str, int]] = {
-    "email": os.getenv("EMAIL_ADDRESS", "your.email@gmail.com"),
-    "password": os.getenv("EMAIL_PASSWORD", "your-app-specific-password"),
-    "imap_server": os.getenv("IMAP_SERVER", "imap.gmail.com"),
-    "smtp_server": os.getenv("SMTP_SERVER", "smtp.gmail.com"),
-    "smtp_port": int(os.getenv("SMTP_PORT", "587")),
-}
+# Email configuration - extract and type cast values once
+EMAIL_ADDRESS = os.getenv("EMAIL_ADDRESS", "your.email@gmail.com")
+EMAIL_PASSWORD = os.getenv("EMAIL_PASSWORD", "your-app-specific-password")
+IMAP_SERVER = os.getenv("IMAP_SERVER", "imap.gmail.com")
+SMTP_SERVER = os.getenv("SMTP_SERVER", "smtp.gmail.com")
+SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
 
 logging.info("=== Email Client Server Starting ===")
-logging.info(f"Email configured: {EMAIL_CONFIG['email']}")
-logging.info(f"IMAP server: {EMAIL_CONFIG['imap_server']}")
-logging.info(f"SMTP server: {EMAIL_CONFIG['smtp_server']}:{EMAIL_CONFIG['smtp_port']}")
-logging.info(f"Password configured: {'Yes' if EMAIL_CONFIG['password'] != 'your-app-specific-password' else 'No'}")
+logging.info(f"Email configured: {EMAIL_ADDRESS}")
+logging.info(f"IMAP server: {IMAP_SERVER}")
+logging.info(f"SMTP server: {SMTP_SERVER}:{SMTP_PORT}")
+logging.info(f"Password configured: {'Yes' if EMAIL_PASSWORD != 'your-app-specific-password' else 'No'}")
 
 # Constants
 SEARCH_TIMEOUT = 60  # seconds
@@ -111,10 +109,10 @@ async def search_emails_async(mail: imaplib.IMAP4_SSL, search_criteria: str) -> 
         email_list = []
         for i, num in enumerate(message_ids[:MAX_EMAILS]):  # Limit to MAX_EMAILS
             logging.debug(f"Fetching email {i+1}/{min(len(message_ids), MAX_EMAILS)}, ID: {num}")
-            
+
             def fetch_email() -> Any:
                 return mail.fetch(num, "(RFC822)")
-            
+
             _, msg_data = await loop.run_in_executor(None, fetch_email)
             if msg_data and msg_data[0]:
                 email_list.append(format_email_summary((msg_data[0],)))
@@ -156,7 +154,7 @@ async def send_email_async(
     try:
         # Create message
         msg = MIMEMultipart()
-        msg["From"] = str(EMAIL_CONFIG["email"])
+        msg["From"] = EMAIL_ADDRESS
         msg["To"] = ", ".join(to_addresses)
         if cc_addresses:
             msg["Cc"] = ", ".join(cc_addresses)
@@ -167,22 +165,22 @@ async def send_email_async(
 
         # Connect to SMTP server and send email
         def send_sync() -> None:
-            with smtplib.SMTP(str(EMAIL_CONFIG["smtp_server"]), int(EMAIL_CONFIG["smtp_port"])) as smtp_server:
+            with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as smtp_server:
                 smtp_server.set_debuglevel(1)  # Enable debug output
-                logging.debug(f"Connecting to {EMAIL_CONFIG['smtp_server']}:{EMAIL_CONFIG['smtp_port']}")
+                logging.debug(f"Connecting to {SMTP_SERVER}:{SMTP_PORT}")
 
                 # Start TLS
                 logging.debug("Starting TLS")
                 smtp_server.starttls()
 
                 # Login
-                logging.debug(f"Logging in as {EMAIL_CONFIG['email']}")
-                smtp_server.login(str(EMAIL_CONFIG["email"]), str(EMAIL_CONFIG["password"]))
+                logging.debug(f"Logging in as {EMAIL_ADDRESS}")
+                smtp_server.login(EMAIL_ADDRESS, EMAIL_PASSWORD)
 
                 # Send email
                 all_recipients = to_addresses + (cc_addresses or [])
                 logging.debug(f"Sending email to: {all_recipients}")
-                result = smtp_server.send_message(msg, str(EMAIL_CONFIG["email"]), all_recipients)
+                result = smtp_server.send_message(msg, EMAIL_ADDRESS, all_recipients)
 
                 if result:
                     # send_message returns a dict of failed recipients
@@ -308,7 +306,7 @@ async def handle_call_tool(
 
     logging.info(f"=== Tool Call: {name} ===")
     logging.info(f"Arguments: {arguments}")
-    
+
     mail: Optional[imaplib.IMAP4_SSL] = None
 
     try:
@@ -348,14 +346,14 @@ async def handle_call_tool(
                 ]
 
         # Connect to IMAP server using predefined credentials
-        logging.info(f"Connecting to IMAP server: {EMAIL_CONFIG['imap_server']}")
-        logging.info(f"Using email: {EMAIL_CONFIG['email']}")
+        logging.info(f"Connecting to IMAP server: {IMAP_SERVER}")
+        logging.info(f"Using email: {EMAIL_ADDRESS}")
 
         try:
-            mail = imaplib.IMAP4_SSL(str(EMAIL_CONFIG["imap_server"]))
+            mail = imaplib.IMAP4_SSL(IMAP_SERVER)
             logging.info("IMAP SSL connection established")
 
-            mail.login(str(EMAIL_CONFIG["email"]), str(EMAIL_CONFIG["password"]))
+            mail.login(EMAIL_ADDRESS, EMAIL_PASSWORD)
             logging.info("IMAP login successful")
         except Exception as e:
             logging.error(f"IMAP connection/login failed: {str(e)}")
@@ -439,7 +437,9 @@ async def handle_call_tool(
                 result_text += "-" * 80 + "\n"
 
                 for email_item in email_list:
-                    result_text += f"{email_item['id']} | {email_item['from']} | {email_item['date']} | {email_item['subject']}\n"
+                    result_text += (
+                        f"{email_item['id']} | {email_item['from']} | {email_item['date']} | {email_item['subject']}\n"
+                    )
 
                 result_text += "\nUse get-email-content with an email ID to view the full content of a specific email."
 
