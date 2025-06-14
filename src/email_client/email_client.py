@@ -744,8 +744,9 @@ class EmailClient:
         logging.info(f"Found {len(message_ids)} messages, fetching up to {MAX_EMAILS}")
 
         email_list = []
-        for i, num in enumerate(message_ids[:MAX_EMAILS]):
-            logging.debug(f"Fetching email {i+1}/{min(len(message_ids), MAX_EMAILS)}, ID: {num}")
+        limited_message_ids = message_ids[:MAX_EMAILS]
+        for i, num in enumerate(limited_message_ids):
+            logging.debug(f"Fetching email {i+1}/{len(limited_message_ids)}, ID: {num}")
 
             def fetch_email(email_id: bytes = num) -> Any:
                 return mail.fetch(email_id.decode(), "(RFC822)")

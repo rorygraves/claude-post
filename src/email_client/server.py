@@ -555,6 +555,7 @@ async def main(enable_write_operations: bool = False) -> None:
     
     logging.info("Starting MCP server main function")
     logging.info(f"Write operations enabled: {WRITE_OPERATIONS_ENABLED}")
+    logging.info(f"Available tools: {'read/write' if WRITE_OPERATIONS_ENABLED else 'read-only'}")
 
     # Create stdin/stdout communication streams for MCP protocol
     async with mcp.server.stdio.stdio_server() as (read_stream, write_stream):
