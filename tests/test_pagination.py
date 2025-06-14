@@ -60,7 +60,7 @@ class TestSearchCriteriaPagination(unittest.TestCase):
             folder="inbox",
             start_date="2024-01-01",
             end_date="2024-01-31", 
-            keyword="test",
+            subject="test",
             max_results=25,
             start_from=50
         )
@@ -68,7 +68,7 @@ class TestSearchCriteriaPagination(unittest.TestCase):
         self.assertEqual(criteria.folder, "inbox")
         self.assertEqual(criteria.start_date, "2024-01-01")
         self.assertEqual(criteria.end_date, "2024-01-31")
-        self.assertEqual(criteria.keyword, "test")
+        self.assertEqual(criteria.subject, "test")
         self.assertEqual(criteria.max_results, 25)
         self.assertEqual(criteria.start_from, 50)
 

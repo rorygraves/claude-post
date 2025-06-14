@@ -132,7 +132,9 @@ async def _handle_search_emails(
             folder=cast(Literal["inbox", "sent"], folder),
             start_date=arguments.get("start_date"),
             end_date=arguments.get("end_date"),
-            keyword=arguments.get("keyword"),
+            subject=arguments.get("subject"),
+            sender=arguments.get("sender"),
+            body=arguments.get("body"),
             max_results=arguments.get("max_results", 100),
             start_from=arguments.get("start_from", 0),
         )
@@ -391,7 +393,7 @@ async def handle_list_tools() -> List[types.Tool]:
     tools = [
         types.Tool(
             name="search-emails",
-            description="Search emails within a date range and/or with specific keywords with pagination support",
+            description="Search emails within a date range and/or with specific field filters with pagination support",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -403,9 +405,17 @@ async def handle_list_tools() -> List[types.Tool]:
                         "type": "string",
                         "description": "End date in YYYY-MM-DD format (optional)",
                     },
-                    "keyword": {
+                    "subject": {
                         "type": "string",
-                        "description": "Keyword to search in email subject and body (optional)",
+                        "description": "Text to search for in email subject line - will match emails where the subject contains this specific string (optional)",
+                    },
+                    "sender": {
+                        "type": "string",
+                        "description": "Text to search for in sender email address or name - will match emails where the sender contains this specific string (optional)",
+                    },
+                    "body": {
+                        "type": "string",
+                        "description": "Text to search for in email body content - will match emails where the body contains this specific string (optional)",
                     },
                     "folder": {
                         "type": "string",

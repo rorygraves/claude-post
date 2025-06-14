@@ -77,14 +77,18 @@ class SearchCriteria:
         folder: Email folder to search ('inbox' or 'sent')
         start_date: Search start date in YYYY-MM-DD format (optional)
         end_date: Search end date in YYYY-MM-DD format (optional)
-        keyword: Text to search for in subject/body (optional)
+        subject: Text to search for in email subject line (optional)
+        sender: Text to search for in sender email address or name (optional)
+        body: Text to search for in email body content (optional)
         max_results: Maximum number of emails to return (default: 100)
         start_from: Starting position for pagination (default: 0)
     """
     folder: Literal["inbox", "sent"] = "inbox"
     start_date: Optional[str] = None
     end_date: Optional[str] = None
-    keyword: Optional[str] = None
+    subject: Optional[str] = None
+    sender: Optional[str] = None
+    body: Optional[str] = None
     max_results: int = 100
     start_from: int = 0
 
@@ -441,12 +445,16 @@ class EmailClient:
             logging.info(f"Permanently deleting {len(email_ids)} emails")
             loop = asyncio.get_event_loop()
 
-            # Mark all emails as deleted
-            for email_id in email_ids:
-                logging.debug(f"Marking email {email_id} as deleted")
-                def mark_deleted(eid: str = email_id) -> tuple[str, list[bytes]]:
-                    return mail.store(eid, '+FLAGS', '\\Deleted')
-                await loop.run_in_executor(None, mark_deleted)
+            # Mark all emails as deleted in a single batch operation
+            # IMAP accepts comma-separated message IDs for batch operations
+            message_set = ','.join(email_ids)
+            
+            logging.debug(f"Batch marking {len(email_ids)} emails as deleted")
+            def batch_mark_deleted() -> tuple[str, list[bytes]]:
+                return mail.store(message_set, '+FLAGS', '\\Deleted')
+            store_result = await loop.run_in_executor(None, batch_mark_deleted)
+            if store_result[0] != 'OK':
+                raise EmailDeletionError(f"Failed to mark emails as deleted: {store_result}")
 
             # Single expunge operation to remove all marked emails
             logging.info(f"Expunging {len(email_ids)} deleted emails")
@@ -474,17 +482,25 @@ class EmailClient:
             logging.info(f"Moving {len(email_ids)} emails to trash folder: {trash_folder}")
             loop = asyncio.get_event_loop()
 
-            # Process all emails: copy to trash, mark as deleted
-            for email_id in email_ids:
-                logging.debug(f"Moving email {email_id} to trash")
-                # Copy email to trash folder
-                def copy_to_trash(eid: str = email_id) -> tuple[str, list[bytes | None]]:
-                    return mail.copy(eid, trash_folder)
-                await loop.run_in_executor(None, copy_to_trash)
-                # Mark original email as deleted
-                def mark_deleted(eid: str = email_id) -> tuple[str, list[bytes]]:
-                    return mail.store(eid, '+FLAGS', '\\Deleted')
-                await loop.run_in_executor(None, mark_deleted)
+            # Process all emails in batch: copy to trash, mark as deleted
+            # IMAP accepts comma-separated message IDs for batch operations
+            message_set = ','.join(email_ids)
+            
+            logging.debug(f"Batch copying {len(email_ids)} emails to trash")
+            # Copy all emails to trash folder in one operation
+            def batch_copy_to_trash() -> tuple[str, list[bytes | None]]:
+                return mail.copy(message_set, trash_folder)
+            copy_result = await loop.run_in_executor(None, batch_copy_to_trash)
+            if copy_result[0] != 'OK':
+                raise EmailDeletionError(f"Failed to copy emails to trash: {copy_result}")
+            
+            logging.debug(f"Batch marking {len(email_ids)} emails as deleted")
+            # Mark all original emails as deleted in one operation
+            def batch_mark_deleted() -> tuple[str, list[bytes]]:
+                return mail.store(message_set, '+FLAGS', '\\Deleted')
+            store_result = await loop.run_in_executor(None, batch_mark_deleted)
+            if store_result[0] != 'OK':
+                raise EmailDeletionError(f"Failed to mark emails as deleted: {store_result}")
 
             # Single expunge operation to remove all emails from current folder
             await loop.run_in_executor(None, mail.expunge)
@@ -681,17 +697,25 @@ class EmailClient:
             logging.info(f"Moving {len(email_ids)} emails from '{source_folder}' to '{destination_folder}'")
             loop = asyncio.get_event_loop()
 
-            # Process all emails: copy to destination, mark as deleted
-            for email_id in email_ids:
-                logging.debug(f"Moving email {email_id}")
-                # Copy email to destination folder
-                def copy_to_dest(eid: str = email_id) -> tuple[str, list[bytes | None]]:
-                    return mail.copy(eid, quoted_dest)
-                await loop.run_in_executor(None, copy_to_dest)
-                # Mark original email as deleted
-                def mark_deleted(eid: str = email_id) -> tuple[str, list[bytes]]:
-                    return mail.store(eid, '+FLAGS', '\\Deleted')
-                await loop.run_in_executor(None, mark_deleted)
+            # Process all emails in batch: copy to destination, mark as deleted
+            # IMAP accepts comma-separated message IDs for batch operations
+            message_set = ','.join(email_ids)
+            
+            logging.debug(f"Batch copying {len(email_ids)} emails to destination")
+            # Copy all emails to destination folder in one operation
+            def batch_copy_to_dest() -> tuple[str, list[bytes | None]]:
+                return mail.copy(message_set, quoted_dest)
+            copy_result = await loop.run_in_executor(None, batch_copy_to_dest)
+            if copy_result[0] != 'OK':
+                raise EmailDeletionError(f"Failed to copy emails to destination: {copy_result}")
+            
+            logging.debug(f"Batch marking {len(email_ids)} emails as deleted")
+            # Mark all original emails as deleted in one operation
+            def batch_mark_deleted() -> tuple[str, list[bytes]]:
+                return mail.store(message_set, '+FLAGS', '\\Deleted')
+            store_result = await loop.run_in_executor(None, batch_mark_deleted)
+            if store_result[0] != 'OK':
+                raise EmailDeletionError(f"Failed to mark emails as deleted: {store_result}")
 
             # Single expunge operation to remove all moved emails from source folder
             await loop.run_in_executor(None, mail.expunge)
@@ -823,48 +847,83 @@ class EmailClient:
             IMAP search criteria string ready for mail.search() command
 
         Note:
-            - Default date range is last 7 days if no dates provided
+            - No default dates applied - searches all emails if no dates provided
             - Single day searches use ON command for efficiency
             - Date ranges use SINCE + BEFORE with exclusive end date
-            - Keywords search both subject and body fields
+            - Supports separate filtering by subject, sender, and body fields
+            - Supports partial date ranges (start only, end only, or both)
+            - Multiple search criteria are combined with AND logic
         """
-        # Apply default date range if not specified (last 7 days)
-        if not criteria.start_date:
-            start_date_dt = datetime.now() - timedelta(days=7)
-            logging.info(f"No start_date provided, using default: {start_date_dt.strftime('%Y-%m-%d')}")
-        else:
+        # Build search criteria based on provided dates (no defaults applied)
+        search_criteria_parts = []
+        
+        # Only add date criteria if dates are provided
+        if criteria.start_date and criteria.end_date:
             start_date_dt = datetime.strptime(criteria.start_date, "%Y-%m-%d")
-            logging.info(f"Parsed start_date: {criteria.start_date}")
-
-        if not criteria.end_date:
-            end_date_dt = datetime.now()
-            logging.info(f"No end_date provided, using today: {end_date_dt.strftime('%Y-%m-%d')}")
-        else:
             end_date_dt = datetime.strptime(criteria.end_date, "%Y-%m-%d")
-            logging.info(f"Parsed end_date: {criteria.end_date}")
-
-        # Convert to IMAP date format: "DD-MMM-YYYY" (e.g., "15-Dec-2024")
-        imap_start_date = start_date_dt.strftime("%d-%b-%Y")
-        imap_end_date = end_date_dt.strftime("%d-%b-%Y")
-        logging.info(f"IMAP formatted dates - start: {imap_start_date}, end: {imap_end_date}")
-
-        # Build date-based search criteria
-        if start_date_dt.date() == end_date_dt.date():
-            # Single day search - more efficient with ON command
-            search_criteria = f'ON "{imap_start_date}"'
-            logging.info(f"Single day search: {search_criteria}")
-        else:
-            # Date range search - BEFORE is exclusive, so add 1 day to end date
+            logging.info(f"Date range specified - start: {criteria.start_date}, end: {criteria.end_date}")
+            
+            # Convert to IMAP date format: "DD-MMM-YYYY" (e.g., "15-Dec-2024")
+            imap_start_date = start_date_dt.strftime("%d-%b-%Y")
+            
+            # Build date-based search criteria
+            if start_date_dt.date() == end_date_dt.date():
+                # Single day search - more efficient with ON command
+                date_criteria = f'ON "{imap_start_date}"'
+                logging.info(f"Single day search: {date_criteria}")
+            else:
+                # Date range search - BEFORE is exclusive, so add 1 day to end date
+                imap_next_day_after_end = (end_date_dt + timedelta(days=1)).strftime("%d-%b-%Y")
+                date_criteria = f'SINCE "{imap_start_date}" BEFORE "{imap_next_day_after_end}"'
+                logging.info(f"Date range search: {date_criteria}")
+            
+            search_criteria_parts.append(date_criteria)
+        elif criteria.start_date:
+            # Only start date provided
+            start_date_dt = datetime.strptime(criteria.start_date, "%Y-%m-%d")
+            imap_start_date = start_date_dt.strftime("%d-%b-%Y")
+            date_criteria = f'SINCE "{imap_start_date}"'
+            logging.info(f"Start date only: {date_criteria}")
+            search_criteria_parts.append(date_criteria)
+        elif criteria.end_date:
+            # Only end date provided
+            end_date_dt = datetime.strptime(criteria.end_date, "%Y-%m-%d")
+            # BEFORE is exclusive, so add 1 day to end date
             imap_next_day_after_end = (end_date_dt + timedelta(days=1)).strftime("%d-%b-%Y")
-            search_criteria = f'SINCE "{imap_start_date}" BEFORE "{imap_next_day_after_end}"'
-            logging.info(f"Date range search: {search_criteria}")
+            date_criteria = f'BEFORE "{imap_next_day_after_end}"'
+            logging.info(f"End date only: {date_criteria}")
+            search_criteria_parts.append(date_criteria)
+        else:
+            logging.info("No date criteria provided - searching all emails")
 
-        # Add keyword search if specified (searches both subject and body)
-        if criteria.keyword:
-            keyword_criteria = f'(OR SUBJECT "{criteria.keyword}" BODY "{criteria.keyword}")'
-            search_criteria = f"({keyword_criteria} {search_criteria})"
-            logging.info(f"Added keyword search, final criteria: {search_criteria}")
+        # Add specific field searches
+        if criteria.subject:
+            subject_criteria = f'SUBJECT "{criteria.subject}"'
+            search_criteria_parts.append(subject_criteria)
+            logging.info(f"Added subject search: {subject_criteria}")
+            
+        if criteria.sender:
+            sender_criteria = f'FROM "{criteria.sender}"'
+            search_criteria_parts.append(sender_criteria)
+            logging.info(f"Added sender search: {sender_criteria}")
+            
+        if criteria.body:
+            body_criteria = f'BODY "{criteria.body}"'
+            search_criteria_parts.append(body_criteria)
+            logging.info(f"Added body search: {body_criteria}")
 
+        # Combine all criteria parts
+        if search_criteria_parts:
+            if len(search_criteria_parts) == 1:
+                search_criteria = search_criteria_parts[0]
+            else:
+                # Multiple criteria - combine with AND logic
+                search_criteria = '(' + ' '.join(search_criteria_parts) + ')'
+        else:
+            # No specific criteria - search all emails
+            search_criteria = 'ALL'
+            
+        logging.info(f"Final search criteria: {search_criteria}")
         return search_criteria
 
     async def _search_with_pagination(self, mail: imaplib.IMAP4_SSL, search_criteria: str, criteria: SearchCriteria) -> List[bytes]:

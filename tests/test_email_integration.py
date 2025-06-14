@@ -118,7 +118,7 @@ This email can be safely deleted after the integration test completes.
 
     async def test_search_test_email(self) -> Optional[str]:
         """Test 3: Search for our specific test email."""
-        print("\n🔄 Testing: Search for test email with keyword...")
+        print("\n🔄 Testing: Search for test email with subject...")
 
         try:
             # Wait a few seconds for email to be delivered
@@ -127,23 +127,23 @@ This email can be safely deleted after the integration test completes.
 
             criteria = SearchCriteria(
                 folder="inbox",
-                keyword=f"TEST-EMAIL] Integration Test {self.test_id}"
+                subject=f"TEST-EMAIL] Integration Test {self.test_id}"
             )
 
             emails = await self.client.search_emails(criteria)
 
             if emails:
                 test_email_id = emails[0]['id']
-                self.log_result("Search test email by keyword", True,
+                self.log_result("Search test email by subject", True,
                               f"Found test email with ID: {test_email_id}")
                 return test_email_id
             else:
-                self.log_result("Search test email by keyword", False,
+                self.log_result("Search test email by subject", False,
                               "Test email not found (may need more time for delivery)")
                 return None
 
         except Exception as e:
-            self.log_result("Search test email by keyword", False, f"Error: {e}")
+            self.log_result("Search test email by subject", False, f"Error: {e}")
             return None
 
     async def test_get_email_content(self, email_id: str) -> bool:

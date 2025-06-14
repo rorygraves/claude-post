@@ -158,7 +158,7 @@ class TestMCPServerPagination(unittest.IsolatedAsyncioTestCase):
         arguments = {
             'start_date': '2024-01-01',
             'end_date': '2024-01-31',
-            'keyword': 'important',
+            'subject': 'important',
             'folder': 'inbox',
             'max_results': 20,
             'start_from': 50
@@ -171,7 +171,7 @@ class TestMCPServerPagination(unittest.IsolatedAsyncioTestCase):
         call_args = mock_email_client.search_emails.call_args[0][0]
         self.assertEqual(call_args.start_date, '2024-01-01')
         self.assertEqual(call_args.end_date, '2024-01-31')
-        self.assertEqual(call_args.keyword, 'important')
+        self.assertEqual(call_args.subject, 'important')
         self.assertEqual(call_args.folder, 'inbox')
         self.assertEqual(call_args.max_results, 20)
         self.assertEqual(call_args.start_from, 50)
