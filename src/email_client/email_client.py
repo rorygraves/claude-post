@@ -22,6 +22,13 @@ from .config import EMAIL_ADDRESS, EMAIL_PASSWORD, IMAP_SERVER, SMTP_PORT, SMTP_
 SEARCH_TIMEOUT = 60  # Maximum time (seconds) for email search operations
 MAX_EMAILS = 100     # Maximum number of emails to fetch in a single search
 
+# Server capabilities we're interested in logging
+INTERESTING_CAPABILITIES = [
+    'IDLE', 'MOVE', 'QUOTA', 'NAMESPACE', 'UNSELECT',
+    'UIDPLUS', 'CONDSTORE', 'QRESYNC', 'SORT', 'THREAD',
+    'COMPRESS', 'ENABLE', 'LIST-EXTENDED', 'SPECIAL-USE'
+]
+
 
 # Custom Exceptions for Email Operations
 class EmailConnectionError(Exception):
@@ -247,67 +254,72 @@ class EmailClient:
         mail = None
         try:
             mail = await self.connect_imap()
-
             logging.info("=== IMAP Server Capabilities ===")
 
-            # Query server capabilities
-            typ, capability_data = mail.capability()
-            if typ == 'OK' and capability_data:
-                capabilities = capability_data[0].decode('utf-8')
-                logging.info(f"Server capabilities: {capabilities}")
-
-                # Parse and log interesting capabilities
-                cap_list = capabilities.split()
-                interesting_caps = [
-                    'IDLE', 'MOVE', 'QUOTA', 'NAMESPACE', 'UNSELECT',
-                    'UIDPLUS', 'CONDSTORE', 'QRESYNC', 'SORT', 'THREAD',
-                    'COMPRESS', 'ENABLE', 'LIST-EXTENDED', 'SPECIAL-USE'
-                ]
-
-                found_caps = [cap for cap in interesting_caps if cap in cap_list]
-                if found_caps:
-                    logging.info(f"Notable capabilities: {', '.join(found_caps)}")
-                else:
-                    logging.info("No notable extended capabilities found")
-            else:
-                logging.warning(f"Failed to query capabilities: {typ}")
-
-            # Query namespace information if supported
-            if hasattr(mail, 'namespace'):
-                try:
-                    typ, namespace_data = mail.namespace()
-                    if typ == 'OK' and namespace_data:
-                        logging.info(f"Namespace info: {namespace_data[0].decode('utf-8') if namespace_data[0] else 'None'}")
-                except Exception as e:
-                    logging.debug(f"Namespace query failed (not supported): {e}")
-
-            # Query server ID if supported
-            try:
-                mail.send(b'ID NIL')
-                typ, id_data = mail.response('ID')
-                if typ == 'OK':
-                    # Read the response
-                    while True:
-                        response = mail.response('ID')
-                        if not response or len(response) != 2:
-                            break
-                        typ, data = response
-                        if typ != 'OK' or not data:
-                            break
-                        if data and data[0]:
-                            server_id = data[0].decode('utf-8')
-                            logging.info(f"Server ID: {server_id}")
-                            break
-            except Exception as e:
-                logging.debug(f"Server ID query failed (not supported): {e}")
+            await self._query_capabilities(mail)
+            await self._query_namespace(mail)
+            await self._query_server_id(mail)
 
             logging.info("=== End Server Capabilities ===")
-
         except Exception as e:
             logging.error(f"Error querying server capabilities: {e!s}", exc_info=True)
         finally:
             if mail:
                 await self.close_imap_connection(mail)
+
+    async def _query_capabilities(self, mail: imaplib.IMAP4_SSL) -> None:
+        """Query and log server capabilities."""
+        typ, capability_data = mail.capability()
+        if typ != 'OK' or not capability_data:
+            logging.warning(f"Failed to query capabilities: {typ}")
+            return
+
+        capabilities = capability_data[0].decode('utf-8')
+        logging.info(f"Server capabilities: {capabilities}")
+
+        cap_list = capabilities.split()
+        found_caps = [cap for cap in INTERESTING_CAPABILITIES if cap in cap_list]
+
+        if found_caps:
+            logging.info(f"Notable capabilities: {', '.join(found_caps)}")
+        else:
+            logging.info("No notable extended capabilities found")
+
+    async def _query_namespace(self, mail: imaplib.IMAP4_SSL) -> None:
+        """Query namespace information if supported."""
+        if not hasattr(mail, 'namespace'):
+            return
+
+        try:
+            typ, namespace_data = mail.namespace()
+            if typ == 'OK' and namespace_data:
+                namespace_info = namespace_data[0].decode('utf-8') if namespace_data[0] else 'None'
+                logging.info(f"Namespace info: {namespace_info}")
+        except Exception as e:
+            logging.debug(f"Namespace query failed (not supported): {e}")
+
+    async def _query_server_id(self, mail: imaplib.IMAP4_SSL) -> None:
+        """Query server ID if supported."""
+        try:
+            mail.send(b'ID NIL')
+            typ, id_data = mail.response('ID')
+            if typ != 'OK':
+                return
+
+            while True:
+                response = mail.response('ID')
+                if not response or len(response) != 2:
+                    break
+
+                typ, data = response
+                if typ != 'OK' or not data or not data[0]:
+                    break
+
+                server_id = data[0].decode('utf-8')
+                logging.info(f"Server ID: {server_id}")
+                break
+        except Exception as e:
+            logging.debug(f"Server ID query failed (not supported): {e}")
 
     async def search_emails(self, criteria: SearchCriteria) -> List[Dict[str, str]]:
         """Search for emails matching the specified criteria.
@@ -413,7 +425,7 @@ class EmailClient:
         Args:
             email_ids: The ID(s) of the email(s) to delete. Can be a single string or list of strings.
             folder: The folder containing the email(s) ('inbox' or 'sent')
-            permanent: If True, permanently delete (mark + expunge). 
+            permanent: If True, permanently delete (mark + expunge).
                       If False (default), move to trash folder.
 
         Raises:
@@ -421,10 +433,7 @@ class EmailClient:
             EmailConnectionError: If IMAP connection fails
         """
         # Convert single email ID to list for uniform processing
-        if isinstance(email_ids, str):
-            ids_to_process = [email_ids]
-        else:
-            ids_to_process = email_ids
+        ids_to_process = [email_ids] if isinstance(email_ids, str) else email_ids
 
         if not ids_to_process:
             raise EmailDeletionError("No email IDs provided for deletion")
@@ -448,13 +457,16 @@ class EmailClient:
             # Mark all emails as deleted in a single batch operation
             # IMAP accepts comma-separated message IDs for batch operations
             message_set = ','.join(email_ids)
-            
+
             logging.debug(f"Batch marking {len(email_ids)} emails as deleted")
             def batch_mark_deleted() -> tuple[str, list[bytes]]:
                 return mail.store(message_set, '+FLAGS', '\\Deleted')
+            def handle_store_failure(result):
+                if result[0] != 'OK':
+                    raise EmailDeletionError(f"Failed to mark emails as deleted: {result}")
+            
             store_result = await loop.run_in_executor(None, batch_mark_deleted)
-            if store_result[0] != 'OK':
-                raise EmailDeletionError(f"Failed to mark emails as deleted: {store_result}")
+            handle_store_failure(store_result)
 
             # Single expunge operation to remove all marked emails
             logging.info(f"Expunging {len(email_ids)} deleted emails")
@@ -485,15 +497,18 @@ class EmailClient:
             # Process all emails in batch: copy to trash, mark as deleted
             # IMAP accepts comma-separated message IDs for batch operations
             message_set = ','.join(email_ids)
-            
+
             logging.debug(f"Batch copying {len(email_ids)} emails to trash")
             # Copy all emails to trash folder in one operation
             def batch_copy_to_trash() -> tuple[str, list[bytes | None]]:
                 return mail.copy(message_set, trash_folder)
-            copy_result = await loop.run_in_executor(None, batch_copy_to_trash)
-            if copy_result[0] != 'OK':
-                raise EmailDeletionError(f"Failed to copy emails to trash: {copy_result}")
+            def handle_copy_failure(result):
+                if result[0] != 'OK':
+                    raise EmailDeletionError(f"Failed to copy emails to trash: {result}")
             
+            copy_result = await loop.run_in_executor(None, batch_copy_to_trash)
+            handle_copy_failure(copy_result)
+
             logging.debug(f"Batch marking {len(email_ids)} emails as deleted")
             # Mark all original emails as deleted in one operation
             def batch_mark_deleted() -> tuple[str, list[bytes]]:
@@ -516,14 +531,14 @@ class EmailClient:
 
     async def _select_folder(self, mail: imaplib.IMAP4_SSL, folder: str) -> None:
         """Select the appropriate email folder by name.
-        
+
         Args:
             mail: Active IMAP connection
             folder: Folder name to select. Can be:
                    - 'inbox' or 'INBOX' (case insensitive)
                    - 'sent' (maps to Gmail sent folder)
                    - Any exact folder name from list_folders()
-        
+
         Raises:
             EmailSearchError: If folder selection fails
         """
@@ -551,19 +566,12 @@ class EmailClient:
             logging.info(f"Successfully selected folder {quoted_folder}, result: {result}")
 
         except Exception as e:
-            logging.exception(f"Error selecting folder {folder}: {e!s}")
+            logging.exception(f"Error selecting folder {folder}")
             raise EmailSearchError(f"Failed to select folder '{folder}': {e!s}") from e
 
     async def _get_trash_folder_name(self, mail: imaplib.IMAP4_SSL) -> str:
         """Determine the correct trash folder name for this email provider."""
         # Try Gmail's common trash folder names
-        possible_trash_folders = [
-            '"[Gmail]/Bin"',      # Gmail in some locales
-            '"[Gmail]/Trash"',    # Gmail in other locales
-            '"Trash"',            # Standard IMAP
-            '"Deleted Items"',    # Outlook/Exchange
-            '"INBOX.Trash"'       # Some IMAP servers
-        ]
 
         loop = asyncio.get_event_loop()
 
@@ -592,11 +600,11 @@ class EmailClient:
 
     async def list_folders(self) -> List[Dict[str, str]]:
         """List all available IMAP folders with their attributes.
-        
+
         Returns:
             List of dictionaries containing folder information:
             [{'name': str, 'display_name': str, 'attributes': str}, ...]
-            
+
         Raises:
             EmailConnectionError: If IMAP connection fails
             EmailSearchError: If folder listing fails
@@ -645,9 +653,11 @@ class EmailClient:
             ))
 
             logging.info(f"Successfully listed {len(folder_list)} folders")
-            return folder_list
-
         except Exception as e:
+            logging.error(f"Error listing folders: {e!s}", exc_info=True)
+            raise EmailSearchError(f"Failed to list folders: {e!s}") from e
+        else:
+            return folder_list
             logging.error(f"Error listing folders: {e!s}", exc_info=True)
             raise EmailSearchError(f"Failed to list folders: {e!s}") from e
         finally:
@@ -667,10 +677,7 @@ class EmailClient:
             EmailConnectionError: If IMAP connection fails
         """
         # Convert single email ID to list for uniform processing
-        if isinstance(email_ids, str):
-            ids_to_process = [email_ids]
-        else:
-            ids_to_process = email_ids
+        ids_to_process = [email_ids] if isinstance(email_ids, str) else email_ids
 
         if not ids_to_process:
             raise EmailDeletionError("No email IDs provided for moving")
@@ -700,7 +707,7 @@ class EmailClient:
             # Process all emails in batch: copy to destination, mark as deleted
             # IMAP accepts comma-separated message IDs for batch operations
             message_set = ','.join(email_ids)
-            
+
             logging.debug(f"Batch copying {len(email_ids)} emails to destination")
             # Copy all emails to destination folder in one operation
             def batch_copy_to_dest() -> tuple[str, list[bytes | None]]:
@@ -708,7 +715,7 @@ class EmailClient:
             copy_result = await loop.run_in_executor(None, batch_copy_to_dest)
             if copy_result[0] != 'OK':
                 raise EmailDeletionError(f"Failed to copy emails to destination: {copy_result}")
-            
+
             logging.debug(f"Batch marking {len(email_ids)} emails as deleted")
             # Mark all original emails as deleted in one operation
             def batch_mark_deleted() -> tuple[str, list[bytes]]:
@@ -731,11 +738,11 @@ class EmailClient:
 
     async def _validate_destination_folder(self, mail: imaplib.IMAP4_SSL, folder_name: str) -> None:
         """Validate that a destination folder exists.
-        
+
         Args:
             mail: Active IMAP connection
             folder_name: Folder name to validate
-            
+
         Raises:
             EmailDeletionError: If folder doesn't exist
         """
@@ -757,7 +764,7 @@ class EmailClient:
                     # Extract folder name from IMAP LIST response
                     if '"' in folder_str:
                         listed_folder = folder_str.split('"')[-2]
-                        if listed_folder == folder_name or f'"{listed_folder}"' == folder_name:
+                        if folder_name in (listed_folder, f'"{listed_folder}"'):
                             folder_exists = True
                             break
 
@@ -769,7 +776,7 @@ class EmailClient:
         except EmailDeletionError:
             raise  # Re-raise our custom error
         except Exception as e:
-            logging.exception(f"Error validating folder {folder_name}: {e!s}")
+            logging.exception(f"Error validating folder {folder_name}")
             raise EmailDeletionError(f"Failed to validate destination folder '{folder_name}': {e!s}") from e
 
     async def count_daily_emails(self, start_date: str, end_date: str) -> Dict[str, int]:
@@ -854,110 +861,138 @@ class EmailClient:
             - Supports partial date ranges (start only, end only, or both)
             - Multiple search criteria are combined with AND logic
         """
-        # Build search criteria based on provided dates (no defaults applied)
         search_criteria_parts = []
-        
-        # Only add date criteria if dates are provided
-        if criteria.start_date and criteria.end_date:
-            start_date_dt = datetime.strptime(criteria.start_date, "%Y-%m-%d")
-            end_date_dt = datetime.strptime(criteria.end_date, "%Y-%m-%d")
-            logging.info(f"Date range specified - start: {criteria.start_date}, end: {criteria.end_date}")
-            
-            # Convert to IMAP date format: "DD-MMM-YYYY" (e.g., "15-Dec-2024")
-            imap_start_date = start_date_dt.strftime("%d-%b-%Y")
-            
-            # Build date-based search criteria
-            if start_date_dt.date() == end_date_dt.date():
-                # Single day search - more efficient with ON command
-                date_criteria = f'ON "{imap_start_date}"'
-                logging.info(f"Single day search: {date_criteria}")
-            else:
-                # Date range search - BEFORE is exclusive, so add 1 day to end date
-                imap_next_day_after_end = (end_date_dt + timedelta(days=1)).strftime("%d-%b-%Y")
-                date_criteria = f'SINCE "{imap_start_date}" BEFORE "{imap_next_day_after_end}"'
-                logging.info(f"Date range search: {date_criteria}")
-            
-            search_criteria_parts.append(date_criteria)
-        elif criteria.start_date:
-            # Only start date provided
-            start_date_dt = datetime.strptime(criteria.start_date, "%Y-%m-%d")
-            imap_start_date = start_date_dt.strftime("%d-%b-%Y")
-            date_criteria = f'SINCE "{imap_start_date}"'
-            logging.info(f"Start date only: {date_criteria}")
-            search_criteria_parts.append(date_criteria)
-        elif criteria.end_date:
-            # Only end date provided
-            end_date_dt = datetime.strptime(criteria.end_date, "%Y-%m-%d")
-            # BEFORE is exclusive, so add 1 day to end date
-            imap_next_day_after_end = (end_date_dt + timedelta(days=1)).strftime("%d-%b-%Y")
-            date_criteria = f'BEFORE "{imap_next_day_after_end}"'
-            logging.info(f"End date only: {date_criteria}")
-            search_criteria_parts.append(date_criteria)
-        else:
-            logging.info("No date criteria provided - searching all emails")
 
-        # Add specific field searches
-        if criteria.subject:
-            subject_criteria = f'SUBJECT "{criteria.subject}"'
-            search_criteria_parts.append(subject_criteria)
-            logging.info(f"Added subject search: {subject_criteria}")
-            
-        if criteria.sender:
-            sender_criteria = f'FROM "{criteria.sender}"'
-            search_criteria_parts.append(sender_criteria)
-            logging.info(f"Added sender search: {sender_criteria}")
-            
-        if criteria.body:
-            body_criteria = f'BODY "{criteria.body}"'
-            search_criteria_parts.append(body_criteria)
-            logging.info(f"Added body search: {body_criteria}")
+        # Add date criteria if provided
+        date_criteria = self._build_date_criteria(criteria)
+        if date_criteria:
+            search_criteria_parts.append(date_criteria)
+
+        # Add field-specific searches
+        field_criteria = self._build_field_criteria(criteria)
+        search_criteria_parts.extend(field_criteria)
 
         # Combine all criteria parts
-        if search_criteria_parts:
-            if len(search_criteria_parts) == 1:
-                search_criteria = search_criteria_parts[0]
-            else:
-                # Multiple criteria - combine with AND logic
-                search_criteria = '(' + ' '.join(search_criteria_parts) + ')'
+        return self._combine_criteria_parts(search_criteria_parts)
+
+    def _build_date_criteria(self, criteria: SearchCriteria) -> str:
+        """Build date-based search criteria from SearchCriteria."""
+        if not (criteria.start_date or criteria.end_date):
+            logging.info("No date criteria provided - searching all emails")
+            return ""
+
+        if criteria.start_date and criteria.end_date:
+            return self._build_date_range_criteria(criteria.start_date, criteria.end_date)
+        elif criteria.start_date:
+            return self._build_start_date_criteria(criteria.start_date)
+        elif criteria.end_date:  # criteria.end_date only
+            return self._build_end_date_criteria(criteria.end_date)
         else:
-            # No specific criteria - search all emails
+            return ""
+
+    def _build_date_range_criteria(self, start_date: str, end_date: str) -> str:
+        """Build criteria for date range or single day."""
+        start_date_dt = datetime.strptime(start_date, "%Y-%m-%d")
+        end_date_dt = datetime.strptime(end_date, "%Y-%m-%d")
+        logging.info(f"Date range specified - start: {start_date}, end: {end_date}")
+
+        imap_start_date = start_date_dt.strftime("%d-%b-%Y")
+
+        if start_date_dt.date() == end_date_dt.date():
+            # Single day search - more efficient with ON command
+            date_criteria = f'ON "{imap_start_date}"'
+            logging.info(f"Single day search: {date_criteria}")
+            return date_criteria
+        else:
+            # Date range search - BEFORE is exclusive, so add 1 day to end date
+            imap_next_day_after_end = (end_date_dt + timedelta(days=1)).strftime("%d-%b-%Y")
+            date_criteria = f'SINCE "{imap_start_date}" BEFORE "{imap_next_day_after_end}"'
+            logging.info(f"Date range search: {date_criteria}")
+            return date_criteria
+
+    def _build_start_date_criteria(self, start_date: str) -> str:
+        """Build criteria for start date only."""
+        start_date_dt = datetime.strptime(start_date, "%Y-%m-%d")
+        imap_start_date = start_date_dt.strftime("%d-%b-%Y")
+        date_criteria = f'SINCE "{imap_start_date}"'
+        logging.info(f"Start date only: {date_criteria}")
+        return date_criteria
+
+    def _build_end_date_criteria(self, end_date: str) -> str:
+        """Build criteria for end date only."""
+        end_date_dt = datetime.strptime(end_date, "%Y-%m-%d")
+        # BEFORE is exclusive, so add 1 day to end date
+        imap_next_day_after_end = (end_date_dt + timedelta(days=1)).strftime("%d-%b-%Y")
+        date_criteria = f'BEFORE "{imap_next_day_after_end}"'
+        logging.info(f"End date only: {date_criteria}")
+        return date_criteria
+
+    def _build_field_criteria(self, criteria: SearchCriteria) -> List[str]:
+        """Build field-specific search criteria."""
+        field_criteria = []
+
+        if criteria.subject:
+            subject_criteria = f'SUBJECT "{criteria.subject}"'
+            field_criteria.append(subject_criteria)
+            logging.info(f"Added subject search: {subject_criteria}")
+
+        if criteria.sender:
+            sender_criteria = f'FROM "{criteria.sender}"'
+            field_criteria.append(sender_criteria)
+            logging.info(f"Added sender search: {sender_criteria}")
+
+        if criteria.body:
+            body_criteria = f'BODY "{criteria.body}"'
+            field_criteria.append(body_criteria)
+            logging.info(f"Added body search: {body_criteria}")
+
+        return field_criteria
+
+    def _combine_criteria_parts(self, search_criteria_parts: List[str]) -> str:
+        """Combine search criteria parts into final search string."""
+        if not search_criteria_parts:
             search_criteria = 'ALL'
-            
+        elif len(search_criteria_parts) == 1:
+            search_criteria = search_criteria_parts[0]
+        else:
+            # Multiple criteria - combine with AND logic
+            search_criteria = '(' + ' '.join(search_criteria_parts) + ')'
+
         logging.info(f"Final search criteria: {search_criteria}")
         return search_criteria
 
     async def _search_with_pagination(self, mail: imaplib.IMAP4_SSL, search_criteria: str, criteria: SearchCriteria) -> List[bytes]:
         """Execute IMAP search with pagination support using ESEARCH if available.
-        
+
         Args:
             mail: Active IMAP4_SSL connection
-            search_criteria: IMAP search criteria string 
+            search_criteria: IMAP search criteria string
             criteria: SearchCriteria object with pagination parameters
-            
+
         Returns:
             List of message ID bytes, already paginated according to criteria
         """
         loop = asyncio.get_event_loop()
-        
+
         # Check if server supports ESEARCH extension
         try:
             # Get server capabilities to check for ESEARCH support
             typ, capability_data = mail.capability()
-            has_esearch = (typ == 'OK' and capability_data and 
+            has_esearch = (typ == 'OK' and capability_data and
                           b'ESEARCH' in capability_data[0])
-            
+
             if has_esearch and criteria.start_from > 0:
                 # Try to use ESEARCH with PARTIAL for server-side pagination
                 # Format: ESEARCH RETURN (PARTIAL start:count) search_criteria
                 start_pos = criteria.start_from + 1  # IMAP uses 1-based indexing
                 count = criteria.max_results
                 esearch_query = f'RETURN (PARTIAL {start_pos}:{count}) {search_criteria}'
-                
+
                 try:
                     logging.debug(f"Attempting ESEARCH with query: {esearch_query}")
                     # Use extended search command if available
                     if hasattr(mail, '_simple_command'):
-                        typ, data = await loop.run_in_executor(None, 
+                        typ, data = await loop.run_in_executor(None,
                             lambda: mail._simple_command('SEARCH', esearch_query))
                         if typ == 'OK' and data:
                             # Parse ESEARCH response
@@ -972,25 +1007,25 @@ class EmailClient:
                                     return message_ids
                 except Exception as e:
                     logging.debug(f"ESEARCH failed, falling back to regular search: {e}")
-                    
+
         except Exception as e:
             logging.debug(f"Capability check failed: {e}")
-        
+
         # Fallback to regular SEARCH with client-side pagination
-        logging.debug(f"Using regular SEARCH with client-side pagination")
+        logging.debug("Using regular SEARCH with client-side pagination")
         _, messages = await loop.run_in_executor(None, lambda: mail.search(None, search_criteria))
-        
+
         if not messages[0]:
             return []
-            
+
         all_message_ids = messages[0].split()
         logging.info(f"Found {len(all_message_ids)} total messages, applying pagination")
-        
+
         # Apply client-side pagination
         start_idx = criteria.start_from
         end_idx = start_idx + criteria.max_results
         paginated_ids: List[bytes] = all_message_ids[start_idx:end_idx]
-        
+
         logging.info(f"Returning {len(paginated_ids)} messages after pagination")
         return paginated_ids
 
@@ -1022,10 +1057,10 @@ class EmailClient:
             Supports ESEARCH for server-side pagination when available.
         """
         loop = asyncio.get_event_loop()
-        
+
         # Check if server supports ESEARCH for efficient pagination
         message_ids = await self._search_with_pagination(mail, search_criteria, criteria)
-        
+
         if not message_ids:
             logging.info("No messages found matching criteria")
             return []
