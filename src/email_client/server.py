@@ -429,7 +429,7 @@ async def handle_list_tools() -> List[types.Tool]:
                         "default": 100,
                     },
                     "start_from": {
-                        "type": "integer", 
+                        "type": "integer",
                         "description": "Starting position for pagination (0-based index, defaults to 0)",
                         "minimum": 0,
                         "default": 0,
