@@ -7,16 +7,68 @@ import traceback
 import io
 import sys
 from contextlib import redirect_stdout, redirect_stderr
+import numpy as np
 
 logger = logging.getLogger(__name__)
 
 
+def get_descriptive_dtype(series: pd.Series) -> str:
+    """Get a more descriptive data type for a pandas Series."""
+    dtype = series.dtype
+    
+    # Handle datetime types
+    if pd.api.types.is_datetime64_any_dtype(dtype):
+        return "datetime"
+    
+    # Handle numeric types
+    if pd.api.types.is_integer_dtype(dtype):
+        return "integer"
+    
+    if pd.api.types.is_float_dtype(dtype):
+        return "float"
+    
+    # Handle boolean
+    if pd.api.types.is_bool_dtype(dtype):
+        return "boolean"
+    
+    # Handle object dtype - need to inspect actual values
+    if dtype == 'object':
+        # Sample a few non-null values to determine type
+        sample = series.dropna().head(100)
+        if len(sample) == 0:
+            return "unknown"
+        
+        # Check if all sampled values are strings
+        if all(isinstance(x, str) for x in sample):
+            return "string"
+        
+        # Check if it's a mix or other types
+        types_found = set(type(x).__name__ for x in sample)
+        if len(types_found) == 1:
+            return list(types_found)[0].lower()
+        else:
+            return f"mixed({', '.join(sorted(types_found))})"
+    
+    # Handle categorical
+    if pd.api.types.is_categorical_dtype(dtype):
+        return "categorical"
+    
+    # Fallback to string representation
+    return str(dtype)
+
+
+def get_descriptive_dtypes(df: pd.DataFrame) -> Dict[str, str]:
+    """Get descriptive data types for all columns in a DataFrame."""
+    return {col: get_descriptive_dtype(df[col]) for col in df.columns}
+
+
 class CollectionMetadata:
-    def __init__(self, collection_id: str, name: str, shape: Tuple[int, int], columns: list):
+    def __init__(self, collection_id: str, name: str, shape: Tuple[int, int], columns: list, dtypes: Dict[str, str]):
         self.id = collection_id
         self.name = name
         self.shape = shape
         self.columns = columns
+        self.dtypes = dtypes
         self.created_at = datetime.now()
         self.last_modified = datetime.now()
     
@@ -26,6 +78,7 @@ class CollectionMetadata:
             "name": self.name,
             "shape": {"rows": self.shape[0], "columns": self.shape[1]},
             "columns": self.columns,
+            "dtypes": self.dtypes,
             "created_at": self.created_at.isoformat(),
             "last_modified": self.last_modified.isoformat()
         }
@@ -48,7 +101,8 @@ class DataStore:
             collection_id=collection_id,
             name=name,
             shape=data.shape,
-            columns=list(data.columns)
+            columns=list(data.columns),
+            dtypes=get_descriptive_dtypes(data)
         )
         self._execution_history[collection_id] = []
         
@@ -91,6 +145,7 @@ class DataStore:
                 # Update metadata
                 metadata.shape = result.shape
                 metadata.columns = list(result.columns)
+                metadata.dtypes = get_descriptive_dtypes(result)
                 metadata.last_modified = datetime.now()
                 
                 # Record operation
@@ -182,7 +237,7 @@ class DataStore:
         return {
             "metadata": metadata.to_dict(),
             "preview": df.head(rows).to_dict(orient="records"),
-            "dtypes": df.dtypes.astype(str).to_dict()
+            "dtypes": get_descriptive_dtypes(df)
         }
     
     def combine(self, target_collection_id: str, source_collection_id: str) -> Dict[str, Any]:
@@ -236,6 +291,7 @@ class DataStore:
             
             # Update metadata
             target_metadata.shape = combined_df.shape
+            target_metadata.dtypes = get_descriptive_dtypes(combined_df)
             target_metadata.last_modified = datetime.now()
             
             # Record the combine operation

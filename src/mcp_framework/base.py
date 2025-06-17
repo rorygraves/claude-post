@@ -37,15 +37,17 @@ class BaseMCPServer:
                 return "Email sent successfully"
     """
     
-    def __init__(self, server_name: str = "mcp-server", server_version: str = "0.1.0"):
+    def __init__(self, server_name: str = "mcp-server", server_version: str = "0.1.0", tool_prefix: str = ""):
         """Initialize the MCP server.
         
         Args:
             server_name: Name of the MCP server
             server_version: Version of the MCP server
+            tool_prefix: Prefix to add to all tool names (e.g., "mail_" results in "mail_send-email")
         """
         self.server_name = server_name
         self.server_version = server_version
+        self.tool_prefix = tool_prefix
         self.server = Server(server_name)
         self._tools: Dict[str, Any] = {}
         
@@ -66,8 +68,10 @@ class BaseMCPServer:
         for name, method in inspect.getmembers(self, predicate=inspect.ismethod):
             if hasattr(method, '_mcp_tool') and method._mcp_tool:
                 tool_name = getattr(method, '_mcp_tool_name', name)
-                self._tools[tool_name] = method
-                logging.info(f"Discovered MCP tool: {tool_name}")
+                # Apply prefix to tool name
+                prefixed_name = f"{self.tool_prefix}{tool_name}" if self.tool_prefix else tool_name
+                self._tools[prefixed_name] = method
+                logging.info(f"Discovered MCP tool: {prefixed_name}")
     
     def _register_handlers(self) -> None:
         """Register MCP protocol handlers."""
