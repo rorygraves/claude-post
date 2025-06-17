@@ -89,6 +89,7 @@ class SearchCriteria:
         body: Text to search for in email body content (optional)
         max_results: Maximum number of emails to return (default: 100)
         start_from: Starting position for pagination (default: 0)
+        direction: Sort direction for emails ('newest' or 'oldest', default: 'newest')
     """
     folder: Literal["inbox", "sent"] = "inbox"
     start_date: Optional[str] = None
@@ -98,6 +99,7 @@ class SearchCriteria:
     body: Optional[str] = None
     max_results: int = 100
     start_from: int = 0
+    direction: Literal["newest", "oldest"] = "newest"
 
     def __post_init__(self) -> None:
         """Automatically validate criteria after object creation."""
@@ -1021,12 +1023,21 @@ class EmailClient:
         all_message_ids = messages[0].split()
         logging.info(f"Found {len(all_message_ids)} total messages, applying pagination")
 
+        # Apply sorting based on direction (newest=reverse, oldest=normal)
+        if criteria.direction == "newest":
+            # Reverse the message IDs to get newest first (highest IDs first)
+            all_message_ids = list(reversed(all_message_ids))
+            logging.debug("Applied newest-first sorting (reversed message IDs)")
+        else:
+            # Keep original order for oldest first (lowest IDs first)
+            logging.debug("Applied oldest-first sorting (original message ID order)")
+
         # Apply client-side pagination
         start_idx = criteria.start_from
         end_idx = start_idx + criteria.max_results
         paginated_ids: List[bytes] = all_message_ids[start_idx:end_idx]
 
-        logging.info(f"Returning {len(paginated_ids)} messages after pagination")
+        logging.info(f"Returning {len(paginated_ids)} messages after pagination (direction: {criteria.direction})")
         return paginated_ids
 
     async def _execute_search(self, mail: imaplib.IMAP4_SSL, search_criteria: str, criteria: SearchCriteria) -> List[Dict[str, str]]:
