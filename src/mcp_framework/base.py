@@ -1,8 +1,11 @@
 """Base class for annotation-based MCP servers."""
 
+import argparse
 import asyncio
 import inspect
+import json
 import logging
+import sys
 from typing import Any, Dict, List, Optional, Union
 
 import mcp.server.stdio
@@ -172,6 +175,102 @@ class BaseMCPServer:
                 ),
             )
     
-    def main(self) -> None:
-        """Main entry point for the server."""
+    def describe_tools(self) -> None:
+        """Print human-readable descriptions of all available tools."""
+        print(f"\n{self.server_name} v{self.server_version}")
+        print("=" * 60)
+        print("\nAvailable Tools:\n")
+        
+        for tool_name, method in sorted(self._tools.items()):
+            # Get description
+            description = getattr(method, '_mcp_tool_description', None)
+            if not description and method.__doc__:
+                description = method.__doc__.strip().split('\n')[0]
+            
+            print(f"Tool: {tool_name}")
+            print(f"  Description: {description or 'No description available'}")
+            
+            # Get parameter schema
+            input_schema = extract_parameter_schema(method)
+            
+            # Enhance parameter descriptions from docstring
+            if method.__doc__:
+                param_descriptions = parse_docstring_params(method.__doc__)
+                for param_name, param_desc in param_descriptions.items():
+                    if param_name in input_schema.get("properties", {}):
+                        input_schema["properties"][param_name]["description"] = param_desc
+            
+            # Print parameters
+            if "properties" in input_schema:
+                print("  Parameters:")
+                required_params = input_schema.get("required", [])
+                
+                for param_name, param_info in input_schema["properties"].items():
+                    param_type = param_info.get("type", "any")
+                    param_desc = param_info.get("description", "No description")
+                    is_required = param_name in required_params
+                    
+                    # Handle array types
+                    if param_type == "array" and "items" in param_info:
+                        item_type = param_info["items"].get("type", "any")
+                        param_type = f"array[{item_type}]"
+                    
+                    # Handle enum values
+                    if "enum" in param_info:
+                        enum_values = ", ".join(f"'{v}'" for v in param_info["enum"])
+                        param_type = f"{param_type} ({enum_values})"
+                    
+                    print(f"    - {param_name}: {param_type} {'(required)' if is_required else '(optional)'}")
+                    print(f"      {param_desc}")
+            else:
+                print("  Parameters: None")
+            
+            print()  # Empty line between tools
+    
+    def parse_args(self, args: Optional[List[str]] = None) -> argparse.Namespace:
+        """Parse command line arguments.
+        
+        Args:
+            args: Optional list of arguments to parse. If None, uses sys.argv.
+            
+        Returns:
+            Parsed arguments namespace
+        """
+        parser = argparse.ArgumentParser(
+            prog=self.server_name,
+            description=f"{self.server_name} - MCP server",
+            formatter_class=argparse.RawDescriptionHelpFormatter
+        )
+        
+        parser.add_argument(
+            "--describe",
+            action="store_true",
+            help="Show available tools and their parameters"
+        )
+        
+        # Allow subclasses to add their own arguments
+        self.add_arguments(parser)
+        
+        return parser.parse_args(args)
+    
+    def add_arguments(self, parser: argparse.ArgumentParser) -> None:
+        """Override in subclasses to add custom command line arguments.
+        
+        Args:
+            parser: The argument parser to add arguments to
+        """
+        pass
+    
+    def main(self, args: Optional[List[str]] = None) -> None:
+        """Main entry point for the server.
+        
+        Args:
+            args: Optional list of command line arguments. If None, uses sys.argv.
+        """
+        parsed_args = self.parse_args(args)
+        
+        if parsed_args.describe:
+            self.describe_tools()
+            sys.exit(0)
+        
         asyncio.run(self.run())

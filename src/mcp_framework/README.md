@@ -9,6 +9,8 @@ A general-purpose framework for building MCP (Model Context Protocol) servers us
 - **Docstring parsing**: Tool descriptions and parameter descriptions extracted from docstrings
 - **Simple inheritance model**: Just inherit from `BaseMCPServer` and add methods
 - **Type safety**: Full type hint support for better IDE integration
+- **Built-in CLI**: Automatic `--help` and `--describe` command line options
+- **Tool discovery**: List all available tools and their parameters
 
 ## Quick Start
 
@@ -37,6 +39,23 @@ if __name__ == "__main__":
     server.main()
 ```
 
+## Command Line Usage
+
+Every MCP server built with this framework automatically supports these command line options:
+
+```bash
+# Show help and available options
+uv run my-server --help
+
+# List all tools with descriptions and parameters
+uv run my-server --describe
+
+# Start the server (default)
+uv run my-server
+```
+
+The `--describe` option provides a human-readable list of all available tools, their descriptions, and parameter details including types and whether they're required or optional.
+
 ## How It Works
 
 1. **Inherit from BaseMCPServer**: Your server class inherits all MCP protocol handling
@@ -46,6 +65,35 @@ if __name__ == "__main__":
 5. **Run the server**: Call `server.main()` to start the MCP server
 
 ## Advanced Features
+
+### Custom Command Line Arguments
+
+You can add custom command line arguments by overriding the `add_arguments` method:
+
+```python
+class MyServer(BaseMCPServer):
+    def __init__(self, api_key: Optional[str] = None):
+        super().__init__("my-server", "1.0.0")
+        self.api_key = api_key
+    
+    def add_arguments(self, parser: argparse.ArgumentParser) -> None:
+        """Add custom command line arguments."""
+        parser.add_argument(
+            "--api-key",
+            help="API key for external services"
+        )
+    
+    def main(self, args: Optional[List[str]] = None) -> None:
+        """Override to handle custom arguments."""
+        parsed_args = self.parse_args(args)
+        
+        # Handle custom args before running
+        if hasattr(parsed_args, 'api_key') and parsed_args.api_key:
+            self.api_key = parsed_args.api_key
+        
+        # Call parent main with parsed args
+        super().main(args)
+```
 
 ### Custom Tool Names
 
@@ -107,12 +155,19 @@ Add your server to Claude Desktop's configuration:
 {
   "mcpServers": {
     "my-server": {
-      "command": "python",
-      "args": ["-m", "my_server"]
+      "command": "/path/to/uv",
+      "args": [
+        "--directory",
+        "/path/to/your/project",
+        "run",
+        "my-server"
+      ]
     }
   }
 }
 ```
+
+**Note**: Always use `uv` to run MCP servers to ensure dependencies are properly loaded from your project's virtual environment.
 
 ## Benefits Over Traditional MCP Server Implementation
 

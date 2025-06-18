@@ -4,6 +4,7 @@ This is an example of how to refactor the email server using the new
 annotation-based MCP framework.
 """
 
+import argparse
 from datetime import datetime
 from typing import Dict, List, Optional, Literal, Any
 
@@ -31,6 +32,15 @@ class EmailMCPServer(BaseMCPServer):
         self.email_client = EmailClient()
         self.datastore = DataStore()
         self.write_operations_enabled = enable_write_operations
+    
+    def add_arguments(self, parser: argparse.ArgumentParser) -> None:
+        """Add email-specific command line arguments."""
+        parser.add_argument(
+            "--enable-write-operations",
+            action="store_true",
+            help="Enable write operations (move and delete emails). "
+                 "By default, only read operations are available for safety."
+        )
     
     @mcp_tool(name="search")
     async def search(
@@ -311,13 +321,16 @@ class EmailMCPServer(BaseMCPServer):
             )
 
 
-def main(enable_write_operations: bool = False) -> None:
+def main() -> None:
     """Main entry point for the annotated email MCP server."""
-    server = EmailMCPServer(enable_write_operations)
+    # Create server instance to parse args
+    temp_server = EmailMCPServer()
+    parsed_args = temp_server.parse_args()
+    
+    # Create actual server with parsed arguments
+    server = EmailMCPServer(enable_write_operations=parsed_args.enable_write_operations)
     server.main()
 
 
 if __name__ == "__main__":
-    import sys
-    enable_write = "--enable-write-operations" in sys.argv
-    main(enable_write)
+    main()

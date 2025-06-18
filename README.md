@@ -164,17 +164,33 @@ Note: For security reasons, Claude will always show you the email details for co
 
 For safety, the EmailClient MCP server runs in **read-only mode by default**. This means only safe operations like searching, reading, and listing are available through the MCP interface.
 
+### Command Line Options
+
+```bash
+# Show help and available options
+uv run email-client --help
+
+# List all available tools with descriptions and parameters
+uv run email-client --describe
+
+# Start server in read-only mode (default)
+uv run email-client
+
+# Start server with write operations enabled
+uv run email-client --enable-write-operations
+```
+
 ### Read-Only Mode (Default)
 ```bash
-python -m email_client
+uv run email-client
 ```
-Available tools: `search-emails`, `get-email-content`, `count-daily-emails`, `list-folders`, `send-email`
+Available tools: `mail-search`, `mail-get-content`, `mail-count-daily`, `mail-folders`, `mail-send`, `mail-fetch`, `mail-list`, `mail-preview`, `mail-update`, `mail-combine`
 
 ### Write Operations Mode
 ```bash
-python -m email_client --enable-write-operations
+uv run email-client --enable-write-operations
 ```
-Additional tools: `move-emails`, `delete-emails`
+Additional tools: `mail-move`, `mail-delete`
 
 ### Security Features
 - **Default safety**: Write operations disabled by default
@@ -184,16 +200,30 @@ Additional tools: `move-emails`, `delete-emails`
 
 ### Available MCP Tools
 
-When `--enable-write-operations` is used, the server exposes these additional tools:
+All tools are prefixed with `mail-` for easy identification. Use `uv run email-client --describe` to see the full list with detailed parameter descriptions.
 
-#### `move-emails`
+#### Core Tools (Always Available)
+- `mail-search`: Search emails and create data collections
+- `mail-get-content`: Get full content of a specific email
+- `mail-count-daily`: Count emails received for each day in a date range
+- `mail-folders`: List all available email folders
+- `mail-send`: Send emails with confirmation
+- `mail-fetch`: Retrieve email data from a collection
+- `mail-list`: List all email data collections
+- `mail-preview`: Preview collection structure and sample records
+- `mail-update`: Apply pandas operations to transform collections
+- `mail-combine`: Combine two email collections
+
+#### Write Operation Tools (Requires `--enable-write-operations`)
+
+##### `mail-move`
 - **Description**: Move one or more emails from one folder to another
 - **Parameters**: 
   - `email_ids` (required): Array of email IDs to move
   - `destination_folder` (required): Target folder
   - `source_folder` (optional): Source folder (defaults to 'inbox')
 
-#### `delete-emails`
+##### `mail-delete`
 - **Description**: Delete one or more emails (move to trash by default, or permanently)
 - **Parameters**:
   - `email_ids` (required): Array of email IDs to delete
@@ -208,7 +238,7 @@ The project includes an integration test suite that validates EmailClient functi
 
 ```bash
 # Make sure your .env file is configured with valid email credentials
-python run_integration_tests.py
+uv run python run_integration_tests.py
 ```
 
 ### What the Tests Do
