@@ -128,8 +128,6 @@ class SearchCriteria:
         # Validate pagination parameters
         if self.max_results <= 0:
             raise ValueError(f"max_results must be positive, got: {self.max_results}")
-        if self.max_results > 1000:
-            raise ValueError(f"max_results cannot exceed 1000, got: {self.max_results}")
         if self.start_from < 0:
             raise ValueError(f"start_from must be non-negative, got: {self.start_from}")
 

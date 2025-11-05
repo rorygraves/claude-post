@@ -57,7 +57,7 @@ class EmailMCPServer(BaseMCPServer):
             sender: Text to search for in sender email address or display name (optional). Case-insensitive substring match.
             body: Text to search for in email body content (optional). Case-insensitive substring match.
             folder: Email folder to search in (optional, defaults to 'inbox'). Use 'list-folders' to see available folders.
-            max_results: Maximum number of emails to include in the collection (optional, defaults to 100, max 1000).
+            max_results: Maximum number of emails to include in the collection (optional, defaults to 100).
             start_from: Starting position for pagination (optional, defaults to 0).
             collection_name: Optional descriptive name for the created collection.
             direction: Sort direction for email results (optional, defaults to 'newest').
