@@ -11,7 +11,13 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from email_client.config import EmailConfig
-from email_client.email_client import EmailClient, EmailDeletionError, _run_blocking, escape_imap_string
+from email_client.email_client import (
+    EmailClient,
+    EmailConnectionError,
+    EmailDeletionError,
+    _run_blocking,
+    escape_imap_string,
+)
 
 
 def _config(*, smtp_security: str = "starttls") -> EmailConfig:
@@ -83,9 +89,11 @@ async def test_implicit_tls_uses_smtp_ssl() -> None:
 @pytest.mark.asyncio
 async def test_move_prefers_uid_move() -> None:
     client = EmailClient(_config())
-    mail = MagicMock(capabilities=(b"IMAP4REV1", b"MOVE"))
+    mail = MagicMock(capabilities=(b"IMAP4REV1",))
+    mail.capability.return_value = ("OK", [b"IMAP4REV1 UIDPLUS MOVE"])
     mail.uid.return_value = ("OK", [b""])
     await client._move_uids(mail, ["10", "11"], '"Archive"')
+    mail.capability.assert_called_once_with()
     mail.uid.assert_called_once_with("MOVE", "10,11", '"Archive"')
     mail.expunge.assert_not_called()
 
@@ -93,7 +101,8 @@ async def test_move_prefers_uid_move() -> None:
 @pytest.mark.asyncio
 async def test_uidplus_fallback_uses_targeted_uid_expunge() -> None:
     client = EmailClient(_config())
-    mail = MagicMock(capabilities=(b"IMAP4REV1", b"UIDPLUS"))
+    mail = MagicMock(capabilities=(b"IMAP4REV1",))
+    mail.capability.return_value = ("OK", [b"IMAP4REV1 UIDPLUS"])
     mail.uid.return_value = ("OK", [b""])
     await client._move_uids(mail, ["10"], '"Archive"')
     assert [call.args[0] for call in mail.uid.call_args_list] == ["COPY", "STORE", "EXPUNGE"]
@@ -105,8 +114,18 @@ async def test_uidplus_fallback_uses_targeted_uid_expunge() -> None:
 async def test_move_refuses_mailbox_wide_expunge() -> None:
     client = EmailClient(_config())
     mail = MagicMock(capabilities=(b"IMAP4REV1",))
+    mail.capability.return_value = ("OK", [b"IMAP4REV1"])
     with pytest.raises(EmailDeletionError, match="refusing"):
         await client._move_uids(mail, ["10"], '"Archive"')
+
+
+@pytest.mark.asyncio
+async def test_capability_refresh_failure_is_reported_accurately() -> None:
+    client = EmailClient(_config())
+    mail = MagicMock(capabilities=(b"IMAP4REV1", b"MOVE"))
+    mail.capability.return_value = ("NO", [b"unavailable"])
+    with pytest.raises(EmailConnectionError, match="refresh IMAP capabilities"):
+        await client._get_capability_set(mail)
 
 
 @pytest.mark.parametrize("email_id", ["", "0", "-1", "1:*", "1\r\nEXPUNGE"])

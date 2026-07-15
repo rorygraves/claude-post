@@ -720,13 +720,18 @@ class EmailClient:
             logging.warning(f"Error closing IMAP connection: {e!s}")
 
     async def _get_capability_set(self, mail: imaplib.IMAP4_SSL) -> set[str]:
-        """Return normalized IMAP capabilities without logging sensitive state."""
-        capabilities = getattr(mail, "capabilities", ())
-        if not capabilities:
-            status, data = await _run_blocking(mail.capability)
-            if status != "OK" or not data:
-                return set()
-            capabilities = data[0].split()
+        """Refresh and normalize capabilities on the authenticated connection.
+
+        ``imaplib.IMAP4.capabilities`` is populated during connection setup and
+        may therefore contain only the server's pre-authentication features.
+        Extensions such as MOVE and UIDPLUS must be detected from a fresh
+        CAPABILITY response after LOGIN.
+        """
+        status, data = await _run_blocking(mail.capability)
+        if status != "OK" or not data or not data[0]:
+            raise EmailConnectionError("Failed to refresh IMAP capabilities after authentication")
+        first_response = data[0]
+        capabilities = first_response.split() if isinstance(first_response, bytes) else str(first_response).split()
         return {
             item.decode("ascii", errors="ignore").upper() if isinstance(item, bytes) else str(item).upper()
             for item in capabilities
