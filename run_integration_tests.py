@@ -11,7 +11,7 @@ Requirements:
 
 Usage:
     python run_integration_tests.py
-    
+
 The tests will:
 1. Send a test email to the configured email address
 2. Search for emails using various criteria
@@ -54,20 +54,22 @@ def check_environment():
 
     # Try to import config to validate it loads properly
     try:
-        from src.email_client.config import EMAIL_ADDRESS, EMAIL_PASSWORD
+        from email_client.config import load_email_config
 
-        if EMAIL_ADDRESS == "your.email@gmail.com" or EMAIL_PASSWORD == "your-app-specific-password":
+        config = load_email_config()
+
+        if config.email_address == "your.email@gmail.com" or config.email_password == "your-app-specific-password":
             print("❌ Error: Default placeholder values detected in .env file!")
             print("Please update .env with your actual email credentials.")
             return False
 
         print("✅ Configuration loaded successfully")
-        print(f"   Email: {EMAIL_ADDRESS}")
+        print(f"   Email: {config.email_address}")
         print(f"   .env file: {env_file}")
         return True
 
-    except ImportError as e:
-        print(f"❌ Error importing email configuration: {e}")
+    except (ImportError, ValueError) as e:
+        print(f"❌ Invalid email configuration: {e}")
         return False
 
 
@@ -104,7 +106,7 @@ def print_footer():
     print()
     print("Next steps:")
     print("• Review any failed tests above")
-    print("• Check email_client.log for detailed logs")
+    print("• Review the server's stderr output for operational logs")
     print("• Test emails are moved to trash if tests pass (can be restored)")
     print("• If tests failed, you may need to manually clean up test emails")
     print()
@@ -131,7 +133,7 @@ async def main():
 
     except Exception as e:
         print(f"\n\n❌ Unexpected error running tests: {e}")
-        print("Check email_client.log for detailed error information")
+        print("Review stderr for detailed operational information")
         sys.exit(1)
 
     finally:

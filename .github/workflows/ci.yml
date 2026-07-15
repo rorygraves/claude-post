@@ -1,0 +1,35 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - name: Install Python and dependencies
+        run: uv sync --extra dev --locked
+      - name: Unit tests
+        run: uv run pytest -q
+      - name: Lint
+        run: uv run ruff check .
+      - name: Type check
+        run: uv run mypy src
+      - name: Build wheel
+        run: uv build
+      - name: Verify package contents
+        run: >-
+          uv run python -c "import glob, tarfile, zipfile;
+          names=zipfile.ZipFile(max(glob.glob('dist/*.whl'))).namelist();
+          assert any(n.startswith('email_client/') for n in names);
+          assert any(n.startswith('mcp_framework/') for n in names);
+          members=tarfile.open(max(glob.glob('dist/*.tar.gz'))).getnames();
+          assert not any('/.claude/' in n or '/assets/' in n for n in members)"

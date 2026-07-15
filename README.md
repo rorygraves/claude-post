@@ -50,12 +50,8 @@ A Model Context Protocol (MCP) server that provides a seamless email management 
    git clone https://github.com/ZilongXue/claude-post.git
    cd claude-post
 
-   # Create and activate virtual environment
-   uv venv
-   source .venv/bin/activate  # On Windows: .venv\Scripts\activate
-
-   # Install dependencies
-   uv pip install -e .
+   # Create the environment and install runtime + development dependencies
+   uv sync --extra dev
    ```
 
 3. Create a `.env` file in the project root:
@@ -66,6 +62,10 @@ A Model Context Protocol (MCP) server that provides a seamless email management 
    IMAP_SERVER=imap.gmail.com
    SMTP_SERVER=smtp.gmail.com
    SMTP_PORT=587
+   SMTP_SECURITY=starttls
+   IMAP_PORT=993
+   EMAIL_CONNECTION_TIMEOUT=30
+   EMAIL_CLIENT_LOG_LEVEL=INFO
    ```
 
 4. Configure Claude Desktop:
@@ -93,7 +93,7 @@ A Model Context Protocol (MCP) server that provides a seamless email management 
          "command": "/Users/username/.local/bin/uv",
          "args": [
            "--directory",
-           "/path/to/claude-post/src/email_client",
+           "/path/to/claude-post",
            "run",
            "email-client"
          ]
@@ -102,7 +102,7 @@ A Model Context Protocol (MCP) server that provides a seamless email management 
    }
    ```
 
-   **Write Operations Mode (includes move/delete tools):**
+   **Explicit side-effect capabilities:**
    ```json
    {
      "mcpServers": {
@@ -110,10 +110,12 @@ A Model Context Protocol (MCP) server that provides a seamless email management 
          "command": "/Users/username/.local/bin/uv",
          "args": [
            "--directory",
-           "/path/to/claude-post/src/email_client",
+           "/path/to/claude-post",
            "run",
            "email-client",
-           "--enable-write-operations"
+           "--enable-write-operations",
+           "--enable-send-operations",
+           "--enable-file-operations"
          ]
        }
      }
@@ -158,11 +160,11 @@ You can interact with your emails using natural language commands. Here are some
 - "I want to send an email to john@example.com"
 - "Send a meeting confirmation to team@company.com"
 
-Note: For security reasons, Claude will always show you the email details for confirmation before actually sending.
+Sending is disabled by default. Enable it only with `--enable-send-operations`, and have the calling client obtain confirmation before invoking the tool.
 
 ## Command Line Options and Security
 
-For safety, the EmailClient MCP server runs in **read-only mode by default**. This means only safe operations like searching, reading, and listing are available through the MCP interface.
+For safety, the EmailClient MCP server exposes only mailbox-read and in-memory collection operations by default. Email sending, filesystem writes, and mailbox mutation are independent opt-in capabilities.
 
 ### Command Line Options
 
@@ -176,21 +178,27 @@ uv run email-client --describe
 # Start server in read-only mode (default)
 uv run email-client
 
-# Start server with write operations enabled
+# Enable mailbox move/delete operations
 uv run email-client --enable-write-operations
+
+# Independently enable sending or filesystem export/download
+uv run email-client --enable-send-operations
+uv run email-client --enable-file-operations
 ```
 
 ### Read-Only Mode (Default)
 ```bash
 uv run email-client
 ```
-Available tools: `mail-search`, `mail-get-content`, `mail-count-daily`, `mail-folders`, `mail-send`, `mail-fetch`, `mail-list`, `mail-preview`, `mail-update`, `mail-combine`
+Available tools: `mail-search`, `mail-get-content`, `mail-count-daily`, `mail-folders`, `mail-fetch`, `mail-list`, `mail-preview`, `mail-transform`, `mail-combine`
 
 ### Write Operations Mode
 ```bash
 uv run email-client --enable-write-operations
 ```
 Additional tools: `mail-move`, `mail-delete`
+
+`--enable-send-operations` adds `mail-send`. `--enable-file-operations` adds `mail-download-attachment` and `mail-export`.
 
 ### Security Features
 - **Default safety**: Write operations disabled by default
@@ -207,12 +215,28 @@ All tools are prefixed with `mail-` for easy identification. Use `uv run email-c
 - `mail-get-content`: Get full content of a specific email
 - `mail-count-daily`: Count emails received for each day in a date range
 - `mail-folders`: List all available email folders
-- `mail-send`: Send emails with confirmation
 - `mail-fetch`: Retrieve email data from a collection
 - `mail-list`: List all email data collections
 - `mail-preview`: Preview collection structure and sample records
-- `mail-update`: Apply pandas operations to transform collections
+- `mail-transform`: Apply declarative, allowlisted collection transformations
 - `mail-combine`: Combine two email collections
+
+`mail-transform` does not execute Python. It accepts one operation name and a `parameters` object. Supported operations are `select_columns`, `drop_columns`, `rename_columns`, `sort`, `filter`, `head`, `tail`, `drop_duplicates`, `convert_datetime`, and `group_count`.
+
+Example parameters:
+
+```json
+{
+  "collection_id": "collection-id",
+  "operation": "filter",
+  "parameters": {
+    "column": "sender",
+    "operator": "contains",
+    "value": "@example.com",
+    "case_sensitive": false
+  }
+}
+```
 
 #### Write Operation Tools (Requires `--enable-write-operations`)
 
@@ -231,6 +255,14 @@ All tools are prefixed with `mail-` for easy identification. Use `uv run email-c
   - `permanent` (optional): If true, permanently delete; if false, move to trash
 
 ## Testing
+
+Run the isolated unit suite and static checks with:
+
+```bash
+uv run pytest -q
+uv run ruff check .
+uv run mypy src
+```
 
 The project includes an integration test suite that validates EmailClient functionality against real email servers. These tests are designed for manual execution, not continuous integration.
 
@@ -331,7 +363,7 @@ claude-post/
 
 ## Logging
 
-The application logs detailed information to `email_client.log`. Check this file for debugging information and error messages.
+The application writes operational logs to stderr, which keeps stdout available for the MCP protocol. Tool arguments, email bodies, recipients, and authentication exchanges are not logged.
 
 ## License
 

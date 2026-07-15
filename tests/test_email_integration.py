@@ -26,8 +26,13 @@ import logging
 from datetime import datetime
 from typing import List, Optional, Tuple
 
-from src.email_client.config import EMAIL_ADDRESS
+from src.email_client.config import load_email_config
 from src.email_client.email_client import EmailClient, EmailDeletionError, EmailMessage, SearchCriteria
+
+try:
+    EMAIL_ADDRESS = load_email_config().email_address
+except ValueError:
+    EMAIL_ADDRESS = ""
 
 
 class EmailIntegrationTester:
@@ -62,7 +67,7 @@ Purpose: Validate email sending functionality
 
 === TEST CONTENT VALIDATION MARKERS ===
 UNIQUE_MARKER_START: test-{self.test_id}-content
-Test Data: 
+Test Data:
 - Number sequence: 1, 2, 3, 4, 5
 - Special characters: !@#$%^&*()
 - Unicode: 🚀📧✅❌🔍
@@ -70,7 +75,7 @@ Test Data:
 
 Test validation points:
 1. Email sending capability ✓
-2. Content preservation ✓  
+2. Content preservation ✓
 3. Subject line handling ✓
 4. Self-delivery confirmation ✓
 UNIQUE_MARKER_END: test-{self.test_id}-content
@@ -79,11 +84,7 @@ UNIQUE_MARKER_END: test-{self.test_id}-content
 This email can be safely deleted after the integration test completes.
 """
 
-            message = EmailMessage(
-                to_addresses=[EMAIL_ADDRESS],
-                subject=test_subject,
-                content=test_content
-            )
+            message = EmailMessage(to_addresses=[EMAIL_ADDRESS], subject=test_subject, content=test_content)
 
             await self.client.send_email(message)
             self.test_emails_sent.append(test_subject)
@@ -100,11 +101,7 @@ This email can be safely deleted after the integration test completes.
 
         try:
             today = datetime.now().strftime("%Y-%m-%d")
-            criteria = SearchCriteria(
-                folder="inbox",
-                start_date=today,
-                end_date=today
-            )
+            criteria = SearchCriteria(folder="inbox", start_date=today, end_date=today)
 
             emails = await self.client.search_emails(criteria)
             found_count = len(emails)
@@ -125,21 +122,18 @@ This email can be safely deleted after the integration test completes.
             print("    Waiting 5 seconds for email delivery...")
             await asyncio.sleep(5)
 
-            criteria = SearchCriteria(
-                folder="inbox",
-                subject=f"TEST-EMAIL] Integration Test {self.test_id}"
-            )
+            criteria = SearchCriteria(folder="inbox", subject=f"TEST-EMAIL] Integration Test {self.test_id}")
 
             emails = await self.client.search_emails(criteria)
 
             if emails:
-                test_email_id = emails[0]['id']
-                self.log_result("Search test email by subject", True,
-                              f"Found test email with ID: {test_email_id}")
+                test_email_id = emails[0]["id"]
+                self.log_result("Search test email by subject", True, f"Found test email with ID: {test_email_id}")
                 return test_email_id
             else:
-                self.log_result("Search test email by subject", False,
-                              "Test email not found (may need more time for delivery)")
+                self.log_result(
+                    "Search test email by subject", False, "Test email not found (may need more time for delivery)"
+                )
                 return None
 
         except Exception as e:
@@ -154,34 +148,36 @@ This email can be safely deleted after the integration test completes.
             content = await self.client.get_email_content(email_id)
 
             if content:
-                email_content = content.get('content', '')
-                email_subject = content.get('subject', '')
+                email_content = content.get("content", "")
+                email_subject = content.get("subject", "")
 
                 # Comprehensive content validation
                 validation_checks = {
-                    'test_id_in_content': self.test_id in email_content,
-                    'test_id_in_subject': f"Integration Test {self.test_id}" in email_subject,
-                    'unique_marker_start': f"UNIQUE_MARKER_START: test-{self.test_id}-content" in email_content,
-                    'unique_marker_end': f"UNIQUE_MARKER_END: test-{self.test_id}-content" in email_content,
-                    'number_sequence': "1, 2, 3, 4, 5" in email_content,
-                    'special_characters': "!@#$%^&*()" in email_content,
-                    'unicode_emojis': "🚀📧✅❌🔍" in email_content,
-                    'validation_points': "Test validation points:" in email_content,
-                    'from_field': content.get('from', '') != 'Unknown',
-                    'to_field': content.get('to', '') != 'Unknown'
+                    "test_id_in_content": self.test_id in email_content,
+                    "test_id_in_subject": f"Integration Test {self.test_id}" in email_subject,
+                    "unique_marker_start": f"UNIQUE_MARKER_START: test-{self.test_id}-content" in email_content,
+                    "unique_marker_end": f"UNIQUE_MARKER_END: test-{self.test_id}-content" in email_content,
+                    "number_sequence": "1, 2, 3, 4, 5" in email_content,
+                    "special_characters": "!@#$%^&*()" in email_content,
+                    "unicode_emojis": "🚀📧✅❌🔍" in email_content,
+                    "validation_points": "Test validation points:" in email_content,
+                    "from_field": content.get("from", "") != "Unknown",
+                    "to_field": content.get("to", "") != "Unknown",
                 }
 
                 passed_checks = sum(validation_checks.values())
                 total_checks = len(validation_checks)
 
                 if passed_checks == total_checks:
-                    self.log_result("Get email content", True,
-                                  f"All {total_checks} validation checks passed")
+                    self.log_result("Get email content", True, f"All {total_checks} validation checks passed")
                     return True
                 else:
                     failed_checks = [k for k, v in validation_checks.items() if not v]
-                    self.log_result("Get email content", False,
-                                  f"Only {passed_checks}/{total_checks} checks passed. Failed: {failed_checks}")
+                    self.log_result(
+                        "Get email content",
+                        False,
+                        f"Only {passed_checks}/{total_checks} checks passed. Failed: {failed_checks}",
+                    )
                     return False
             else:
                 self.log_result("Get email content", False, "No content returned")
@@ -202,15 +198,12 @@ This email can be safely deleted after the integration test completes.
             if today in counts:
                 count = counts[today]
                 if count >= 0:  # -1 indicates timeout
-                    self.log_result("Count daily emails", True,
-                                  f"Today ({today}): {count} emails")
+                    self.log_result("Count daily emails", True, f"Today ({today}): {count} emails")
                 else:
-                    self.log_result("Count daily emails", False,
-                                  f"Timeout counting emails for {today}")
+                    self.log_result("Count daily emails", False, f"Timeout counting emails for {today}")
                 return count >= 0
             else:
-                self.log_result("Count daily emails", False,
-                              f"No count returned for {today}")
+                self.log_result("Count daily emails", False, f"No count returned for {today}")
                 return False
 
         except Exception as e:
@@ -223,18 +216,13 @@ This email can be safely deleted after the integration test completes.
 
         try:
             today = datetime.now().strftime("%Y-%m-%d")
-            criteria = SearchCriteria(
-                folder="sent",
-                start_date=today,
-                end_date=today
-            )
+            criteria = SearchCriteria(folder="sent", start_date=today, end_date=today)
 
             emails = await self.client.search_emails(criteria)
             found_count = len(emails)
 
             # Should find at least our test email
-            self.log_result("Search sent emails", True,
-                          f"Found {found_count} sent emails for {today}")
+            self.log_result("Search sent emails", True, f"Found {found_count} sent emails for {today}")
             return True
 
         except Exception as e:
@@ -251,19 +239,17 @@ This email can be safely deleted after the integration test completes.
             if folders:
                 folder_count = len(folders)
                 # Check for expected folders (inbox should always exist)
-                has_inbox = any(folder['name'].lower() in ['inbox', 'INBOX'] for folder in folders)
+                has_inbox = any(folder["name"].lower() in ["inbox", "INBOX"] for folder in folders)
 
                 if has_inbox:
-                    self.log_result("List folders", True,
-                                  f"Found {folder_count} folders including inbox")
+                    self.log_result("List folders", True, f"Found {folder_count} folders including inbox")
 
                     # Log some folder examples for debugging
                     sample_folders = [f"{f['name']} ({f['display_name']})" for f in folders[:3]]
                     logging.info(f"Sample folders: {sample_folders}")
                     return True
                 else:
-                    self.log_result("List folders", False,
-                                  f"Found {folder_count} folders but no inbox folder")
+                    self.log_result("List folders", False, f"Found {folder_count} folders but no inbox folder")
                     return False
             else:
                 self.log_result("List folders", False, "No folders returned")
@@ -283,19 +269,23 @@ This email can be safely deleted after the integration test completes.
 
             # Find a suitable destination folder (prefer Drafts, Archive, or any non-inbox folder)
             destination_folder = None
-            preferred_folders = ['Drafts', '[Gmail]/Drafts', 'Archive', '[Gmail]/All Mail']
+            preferred_folders = ["Drafts", "[Gmail]/Drafts", "Archive", "[Gmail]/All Mail"]
 
             # Look for preferred folders first
             for folder in folders:
-                if folder['name'] in preferred_folders or folder['display_name'] in ['Drafts', 'All Mail', 'Archive']:
-                    destination_folder = folder['name']
+                if folder["name"] in preferred_folders or folder["display_name"] in ["Drafts", "All Mail", "Archive"]:
+                    destination_folder = folder["name"]
                     break
 
             # If no preferred folder found, use any non-inbox folder
             if not destination_folder:
                 for folder in folders:
-                    if folder['name'].lower() not in ['inbox', 'INBOX'] and 'Trash' not in folder['name'] and 'Bin' not in folder['name']:
-                        destination_folder = folder['name']
+                    if (
+                        folder["name"].lower() not in ["inbox", "INBOX"]
+                        and "Trash" not in folder["name"]
+                        and "Bin" not in folder["name"]
+                    ):
+                        destination_folder = folder["name"]
                         break
 
             if not destination_folder:
@@ -312,18 +302,23 @@ This email can be safely deleted after the integration test completes.
             try:
                 content = await self.client.get_email_content(email_id)
                 if content:
-                    self.log_result("Move email", False,
-                                  f"Email still accessible in inbox after move to {destination_folder}")
+                    self.log_result(
+                        "Move email", False, f"Email still accessible in inbox after move to {destination_folder}"
+                    )
                     return False
                 else:
-                    self.log_result("Move email", True,
-                                  f"Email successfully moved to {destination_folder} (no longer in inbox)")
+                    self.log_result(
+                        "Move email", True, f"Email successfully moved to {destination_folder} (no longer in inbox)"
+                    )
                     return True
 
             except Exception:
                 # If getting content fails, that's expected after moving
-                self.log_result("Move email", True,
-                              f"Email successfully moved to {destination_folder} (no longer accessible in inbox)")
+                self.log_result(
+                    "Move email",
+                    True,
+                    f"Email successfully moved to {destination_folder} (no longer accessible in inbox)",
+                )
                 return True
 
         except Exception as e:
@@ -342,8 +337,7 @@ This email can be safely deleted after the integration test completes.
         try:
             # This is more of a validation test - ensuring the delete functionality exists
             # and would work if we had an email to delete
-            self.log_result("Delete email functionality", True,
-                          "Delete email method available and properly configured")
+            self.log_result("Delete email functionality", True, "Delete email method available and properly configured")
             return True
 
         except Exception as e:
@@ -361,8 +355,9 @@ This email can be safely deleted after the integration test completes.
             # Test with empty list (should raise an error)
             try:
                 await self.client.delete_email([], folder="inbox", permanent=False)
-                self.log_result("Delete multiple emails functionality", False,
-                              "Empty array should have raised an error")
+                self.log_result(
+                    "Delete multiple emails functionality", False, "Empty array should have raised an error"
+                )
                 return False
             except EmailDeletionError:
                 # Expected behavior - empty array should fail
@@ -370,8 +365,11 @@ This email can be safely deleted after the integration test completes.
 
             # Test method signature accepts both string and list
             # We won't actually execute these, just verify the method can be called with different types
-            self.log_result("Delete multiple emails functionality", True,
-                          "Delete email method supports both single ID and array of IDs")
+            self.log_result(
+                "Delete multiple emails functionality",
+                True,
+                "Delete email method supports both single ID and array of IDs",
+            )
             return True
 
         except Exception as e:
@@ -389,8 +387,7 @@ This email can be safely deleted after the integration test completes.
             # Test with empty list (should raise an error)
             try:
                 await self.client.move_email([], "inbox", "[Gmail]/Drafts")
-                self.log_result("Move multiple emails functionality", False,
-                              "Empty array should have raised an error")
+                self.log_result("Move multiple emails functionality", False, "Empty array should have raised an error")
                 return False
             except EmailDeletionError:
                 # Expected behavior - empty array should fail
@@ -398,8 +395,9 @@ This email can be safely deleted after the integration test completes.
 
             # Test method signature accepts both string and list
             # We won't actually execute these, just verify the method can be called with different types
-            self.log_result("Move multiple emails functionality", True,
-                          "Move email method supports both single ID and array of IDs")
+            self.log_result(
+                "Move multiple emails functionality", True, "Move email method supports both single ID and array of IDs"
+            )
             return True
 
         except Exception as e:
@@ -421,18 +419,19 @@ This email can be safely deleted after the integration test completes.
             try:
                 content = await self.client.get_email_content(email_id)
                 if content:
-                    self.log_result("Move email to trash", False,
-                                  "Email still exists in inbox after moving to trash")
+                    self.log_result("Move email to trash", False, "Email still exists in inbox after moving to trash")
                     return False
                 else:
-                    self.log_result("Move email to trash", True,
-                                  "Email successfully moved to trash (no longer in inbox)")
+                    self.log_result(
+                        "Move email to trash", True, "Email successfully moved to trash (no longer in inbox)"
+                    )
                     return True
 
             except Exception:
                 # If getting content fails, that's expected after moving to trash
-                self.log_result("Move email to trash", True,
-                              "Email successfully moved to trash (no longer accessible in inbox)")
+                self.log_result(
+                    "Move email to trash", True, "Email successfully moved to trash (no longer accessible in inbox)"
+                )
                 return True
 
         except EmailDeletionError as e:
@@ -453,15 +452,13 @@ This email can be safely deleted after the integration test completes.
             # Wait a moment for operation to complete
             await asyncio.sleep(2)
 
-            self.log_result("Permanent delete email", True,
-                          "Email permanently deleted (if it was still accessible)")
+            self.log_result("Permanent delete email", True, "Email permanently deleted (if it was still accessible)")
             return True
 
         except EmailDeletionError as e:
             # This might fail if email was already moved to trash, which is expected
             if "not found" in str(e).lower() or "no such message" in str(e).lower():
-                self.log_result("Permanent delete email", True,
-                              "Email was already moved to trash (expected)")
+                self.log_result("Permanent delete email", True, "Email was already moved to trash (expected)")
                 return True
             else:
                 self.log_result("Permanent delete email", False, f"Unexpected deletion error: {e}")
@@ -476,46 +473,34 @@ This email can be safely deleted after the integration test completes.
 
         try:
             today = datetime.now().strftime("%Y-%m-%d")
-            
+
             # Test 1: Default pagination (first page)
             print("    Testing default pagination (first page)...")
             criteria_page1 = SearchCriteria(
-                folder="inbox",
-                start_date=today,
-                end_date=today,
-                max_results=5,
-                start_from=0
+                folder="inbox", start_date=today, end_date=today, max_results=5, start_from=0
             )
-            
+
             emails_page1 = await self.client.search_emails(criteria_page1)
             page1_count = len(emails_page1)
-            
+
             # Test 2: Second page pagination
             print("    Testing second page pagination...")
             criteria_page2 = SearchCriteria(
-                folder="inbox", 
-                start_date=today,
-                end_date=today,
-                max_results=5,
-                start_from=5
+                folder="inbox", start_date=today, end_date=today, max_results=5, start_from=5
             )
-            
+
             emails_page2 = await self.client.search_emails(criteria_page2)
             page2_count = len(emails_page2)
-            
+
             # Test 3: Small batch size
             print("    Testing small batch size (max_results=1)...")
             criteria_small = SearchCriteria(
-                folder="inbox",
-                start_date=today,
-                end_date=today,
-                max_results=1,
-                start_from=0
+                folder="inbox", start_date=today, end_date=today, max_results=1, start_from=0
             )
-            
+
             emails_small = await self.client.search_emails(criteria_small)
             small_count = len(emails_small)
-            
+
             # Test 4: Out of bounds pagination
             print("    Testing out of bounds pagination...")
             criteria_oob = SearchCriteria(
@@ -523,59 +508,59 @@ This email can be safely deleted after the integration test completes.
                 start_date=today,
                 end_date=today,
                 max_results=10,
-                start_from=9999  # Way beyond available emails
+                start_from=9999,  # Way beyond available emails
             )
-            
+
             emails_oob = await self.client.search_emails(criteria_oob)
             oob_count = len(emails_oob)
-            
+
             # Validate results
             success = True
             details = []
-            
+
             # Check that pages don't overlap (if we have enough emails)
             if page1_count > 0 and page2_count > 0:
-                page1_ids = {email['id'] for email in emails_page1}
-                page2_ids = {email['id'] for email in emails_page2}
+                page1_ids = {email["id"] for email in emails_page1}
+                page2_ids = {email["id"] for email in emails_page2}
                 overlap = page1_ids.intersection(page2_ids)
-                
+
                 if overlap:
                     success = False
                     details.append(f"Page overlap detected: {overlap}")
                 else:
                     details.append("✓ No page overlap detected")
-            
+
             # Check small batch works
             if small_count > 1:
                 success = False
                 details.append(f"Small batch returned {small_count} results, expected ≤ 1")
             else:
                 details.append(f"✓ Small batch returned {small_count} results (≤ 1)")
-            
+
             # Check out of bounds returns empty
             if oob_count > 0:
                 details.append(f"⚠️ Out of bounds returned {oob_count} results (expected 0, but may be valid)")
             else:
                 details.append("✓ Out of bounds correctly returned 0 results")
-            
+
             # Summary
             details.append(f"Page 1: {page1_count} results, Page 2: {page2_count} results")
             details.append(f"Small batch: {small_count} results, Out of bounds: {oob_count} results")
-            
+
             self.log_result("Pagination functionality", success, "; ".join(details))
             return success
-            
+
         except Exception as e:
             self.log_result("Pagination functionality", False, f"Error: {e}")
             return False
 
     def print_summary(self) -> None:
         """Print final test summary."""
-        print("\n" + "="*60)
+        print("\n" + "=" * 60)
         print("EMAIL CLIENT INTEGRATION TEST SUMMARY")
         print(f"Test ID: {self.test_id}")
         print(f"Email Account: {EMAIL_ADDRESS}")
-        print("="*60)
+        print("=" * 60)
 
         total_tests = len(self.results)
         passed_tests = sum(1 for _, passed, _ in self.results if passed)
@@ -595,7 +580,7 @@ This email can be safely deleted after the integration test completes.
             print("    Note: Test emails are moved to trash if tests pass (can be restored from trash).")
 
         print(f"\n{'🎉 ALL TESTS PASSED!' if passed_tests == total_tests else '⚠️  SOME TESTS FAILED'}")
-        print("="*60)
+        print("=" * 60)
 
     async def run_all_tests(self) -> None:
         """Run the complete test suite."""
