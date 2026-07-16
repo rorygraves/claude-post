@@ -1,6 +1,6 @@
 [project]
 name = "email_client"
-version = "0.2.0"
+version = "0.3.0"
 description = "Email search and management tool using MCP protocol"
 readme = "README.md"
 requires-python = ">=3.12"

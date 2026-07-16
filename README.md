@@ -221,6 +221,17 @@ All tools are prefixed with `mail-` for easy identification. Use `uv run email-c
 - `mail-transform`: Apply declarative, allowlisted collection transformations
 - `mail-combine`: Combine two email collections
 
+### Stable Gmail Backlinks
+
+Single and bulk `mail-get-content` responses include these additive fields:
+
+- `message_id`: RFC-822 `Message-ID`, including angle brackets, or `null`
+- `gmail_msgid`: Gmail's stable message identifier as a decimal string, or `null`
+- `gmail_thrid`: Gmail's stable thread identifier as a decimal string, or `null`
+- `gmail_url`: an account-pinned Gmail permalink, with an RFC-822 search URL as the non-Gmail fallback
+
+Gmail identifiers remain stable when a message moves between folders, unlike the folder-scoped IMAP UID exposed as `id`. The configured `EMAIL_ADDRESS` is used as the permalink's `authuser`. On Gmail, `mail-search` collections also include `gmail_msgid`, allowing backlinks to be built without fetching every message body. Metadata fetches use `BODY.PEEK` and do not mark messages as read.
+
 `mail-transform` does not execute Python. It accepts one operation name and a `parameters` object. Supported operations are `select_columns`, `drop_columns`, `rename_columns`, `sort`, `filter`, `head`, `tail`, `drop_duplicates`, `convert_datetime`, and `group_count`.
 
 Example parameters:

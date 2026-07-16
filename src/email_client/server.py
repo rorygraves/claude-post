@@ -43,7 +43,7 @@ class EmailMCPServer(BaseMCPServer):
         self.file_operations_enabled = enable_file_operations
         self.email_client = email_client or EmailClient()
         self.datastore = datastore or DataStore()
-        super().__init__("email", "0.2.0", tool_prefix="mail-")
+        super().__init__("email", "0.3.0", tool_prefix="mail-")
 
     def _is_tool_enabled(self, method: Any) -> bool:
         capability = getattr(method, "_mcp_tool_capability", None)
@@ -168,7 +168,7 @@ class EmailMCPServer(BaseMCPServer):
             folder: Folder containing the email(s) (defaults to 'inbox')
 
         Returns:
-            For single ID: Dictionary with email details (from, to, date, subject, content)
+            For single ID: Dictionary with email details, Message-ID, stable Gmail IDs, and permalink
             For multiple IDs: Dictionary with 'emails' list, 'fetched' count, and 'errors' list
         """
         # Collect all IDs to fetch

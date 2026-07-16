@@ -21,6 +21,7 @@ from email.mime.text import MIMEText
 from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional, ParamSpec, Tuple, TypeVar, Union
+from urllib.parse import quote
 
 # Constants from environment configuration
 from .config import EmailConfig, load_email_config
@@ -28,6 +29,8 @@ from .config import EmailConfig, load_email_config
 # Operation Configuration Constants
 MAX_EMAILS = 500  # Hard upper bound for one search page
 MAX_ATTACHMENT_SIZE = 25 * 1024 * 1024
+GMAIL_WEB_BASE_URL = "https://mail.google.com/mail/u/0/"
+GMAIL_METADATA_FETCH = "(X-GM-MSGID X-GM-THRID BODY.PEEK[HEADER.FIELDS (MESSAGE-ID)])"
 
 P = ParamSpec("P")
 R = TypeVar("R")
@@ -737,6 +740,111 @@ class EmailClient:
             for item in capabilities
         }
 
+    async def _supports_gmail_extensions(self, mail: imaplib.IMAP4_SSL) -> bool:
+        """Return whether optional Gmail IMAP metadata is available."""
+        try:
+            return "X-GM-EXT-1" in await self._get_capability_set(mail)
+        except Exception as exc:
+            logging.warning("Could not detect optional Gmail extensions: %s", type(exc).__name__)
+            return False
+
+    @staticmethod
+    def _extract_fetch_number(descriptor: object, field: str) -> str | None:
+        """Extract a decimal IMAP FETCH attribute without converting its precision."""
+        if not isinstance(descriptor, bytes):
+            return None
+        match = re.search(rb"\b" + re.escape(field.encode("ascii")) + rb" (\d+)\b", descriptor, re.IGNORECASE)
+        return match.group(1).decode("ascii") if match else None
+
+    @staticmethod
+    def _normalize_message_id(message_id: object) -> str | None:
+        """Normalize an RFC-822 Message-ID while preserving its angle brackets."""
+        if not isinstance(message_id, str):
+            return None
+        normalized = message_id.strip()
+        return normalized or None
+
+    def _build_gmail_url(self, gmail_msgid: str | None, message_id: str | None) -> str | None:
+        """Build an account-pinned Gmail message URL, falling back to RFC-822 search."""
+        fragment: str | None = None
+        if gmail_msgid and gmail_msgid.isdigit():
+            numeric_msgid = int(gmail_msgid)
+            if 0 <= numeric_msgid <= (1 << 64) - 1:
+                fragment = f"all/{numeric_msgid:x}"
+        if fragment is None and message_id:
+            search_message_id = message_id.strip().strip("<>")
+            if search_message_id:
+                fragment = f"search/rfc822msgid:{quote(search_message_id, safe='')}"
+        if fragment is None:
+            return None
+        authuser = quote(self.email_address, safe="@.")
+        return f"{GMAIL_WEB_BASE_URL}?authuser={authuser}#{fragment}"
+
+    def _build_backlink_fields(
+        self,
+        *,
+        message_id: object = None,
+        gmail_msgid: object = None,
+        gmail_thrid: object = None,
+    ) -> Dict[str, str | None]:
+        """Return JSON-safe backlink fields with Gmail identifiers kept as strings."""
+        normalized_message_id = self._normalize_message_id(message_id)
+        normalized_gmail_msgid = str(gmail_msgid) if isinstance(gmail_msgid, str) and gmail_msgid.isdigit() else None
+        normalized_gmail_thrid = str(gmail_thrid) if isinstance(gmail_thrid, str) and gmail_thrid.isdigit() else None
+        return {
+            "message_id": normalized_message_id,
+            "gmail_msgid": normalized_gmail_msgid,
+            "gmail_thrid": normalized_gmail_thrid,
+            "gmail_url": self._build_gmail_url(normalized_gmail_msgid, normalized_message_id),
+        }
+
+    def _merge_backlink_fields(
+        self,
+        content: Dict[str, Any],
+        metadata: Dict[str, str | None] | None,
+    ) -> Dict[str, Any]:
+        """Merge optional Gmail metadata with Message-ID parsed from full content."""
+        metadata = metadata or {}
+        content.update(
+            self._build_backlink_fields(
+                message_id=metadata.get("message_id") or content.get("message_id"),
+                gmail_msgid=metadata.get("gmail_msgid"),
+                gmail_thrid=metadata.get("gmail_thrid"),
+            )
+        )
+        return content
+
+    async def _fetch_backlink_metadata(
+        self,
+        mail: imaplib.IMAP4_SSL,
+        email_ids: List[str],
+    ) -> Dict[str, Dict[str, str | None]]:
+        """Fetch stable Gmail identifiers and Message-ID headers without setting Seen."""
+        if not email_ids or not await self._supports_gmail_extensions(mail):
+            return {}
+
+        try:
+            responses = await self._uid_command(mail, "FETCH", ",".join(email_ids), GMAIL_METADATA_FETCH)
+        except EmailSearchError as exc:
+            logging.warning("Optional Gmail metadata fetch failed: %s", type(exc).__name__)
+            return {}
+
+        metadata_by_uid: Dict[str, Dict[str, str | None]] = {}
+        for response in responses:
+            if not isinstance(response, tuple) or len(response) < 2:
+                continue
+            descriptor, header_bytes = response[0], response[1]
+            uid = self._extract_fetch_number(descriptor, "UID")
+            if uid is None or not isinstance(header_bytes, bytes):
+                continue
+            header_message = email.message_from_bytes(header_bytes)
+            metadata_by_uid[uid] = self._build_backlink_fields(
+                message_id=header_message.get("Message-ID"),
+                gmail_msgid=self._extract_fetch_number(descriptor, "X-GM-MSGID"),
+                gmail_thrid=self._extract_fetch_number(descriptor, "X-GM-THRID"),
+            )
+        return metadata_by_uid
+
     async def _uid_command(
         self,
         mail: imaplib.IMAP4_SSL,
@@ -844,7 +952,7 @@ class EmailClient:
         except Exception as e:
             logging.debug(f"Server ID query failed (not supported): {e}")
 
-    async def search_emails(self, criteria: SearchCriteria) -> Tuple[List[Dict[str, str]], PaginationInfo]:
+    async def search_emails(self, criteria: SearchCriteria) -> Tuple[List[Dict[str, Any]], PaginationInfo]:
         """Search for emails matching the specified criteria.
 
         Connects to IMAP, selects the appropriate folder, and searches for emails
@@ -857,7 +965,8 @@ class EmailClient:
         Returns:
             Tuple of:
             - List of dictionaries containing email metadata:
-              [{'id': str, 'from': str, 'date': str, 'subject': str}, ...]
+              [{'id': str, 'from': str, 'date': str, 'subject': str,
+                'gmail_msgid': str | None}, ...]
             - PaginationInfo with details about total results and pagination
 
         Raises:
@@ -890,12 +999,15 @@ class EmailClient:
             if mail:
                 await self.close_imap_connection(mail)
 
-    async def get_email_content(self, email_id: str, folder: str = "inbox") -> Optional[Dict[str, str]]:
+    async def get_email_content(self, email_id: str, folder: str = "inbox") -> Optional[Dict[str, Any]]:
         """Get full content of a specific email.
 
         Args:
             email_id: The ID of the email to retrieve
             folder: Folder containing the email (defaults to 'inbox')
+
+        Returns:
+            Email content with RFC-822 and optional stable Gmail backlink fields.
         """
         self._validate_email_ids([email_id], maximum=1)
         mail = None
@@ -903,17 +1015,19 @@ class EmailClient:
             mail = await self.connect_imap()
             await self._select_folder(mail, folder)
 
-            status, msg_data = await _run_blocking(
-                mail.uid,
-                "FETCH",
-                email_id,
-                "(BODY.PEEK[])",
+            msg_data = await self._uid_command(mail, "FETCH", email_id, "(UID BODY.PEEK[])")
+            message_response = next(
+                (
+                    response
+                    for response in msg_data
+                    if isinstance(response, tuple) and len(response) >= 2 and isinstance(response[1], bytes)
+                ),
+                None,
             )
-            if status != "OK":
-                raise EmailSearchError(f"UID FETCH failed for email {email_id}")
-
-            if msg_data and msg_data[0]:
-                return self._format_email_content((msg_data[0],))
+            if message_response is not None:
+                content = self._format_email_content((message_response,))
+                metadata_by_uid = await self._fetch_backlink_metadata(mail, [email_id])
+                return self._merge_backlink_fields(content, metadata_by_uid.get(email_id))
 
         except Exception as e:
             logging.error("Email content fetch failed with %s", type(e).__name__)
@@ -940,6 +1054,7 @@ class EmailClient:
             - emails: List of email content dictionaries
             - fetched: Number of emails successfully fetched
             - errors: List of error dictionaries for failed fetches
+            Each email includes RFC-822 and optional stable Gmail backlink fields.
         """
         mail = None
         # Limit the number of emails to prevent abuse
@@ -952,28 +1067,23 @@ class EmailClient:
             mail = await self.connect_imap()
             await self._select_folder(mail, folder)
 
-            emails: List[Dict[str, str]] = []
+            emails: List[Dict[str, Any]] = []
             errors: List[Dict[str, str]] = []
 
             # Batch fetch for efficiency using comma-separated IDs
             message_set = ",".join(limited_ids)
             logging.debug("Bulk fetching %s emails", len(limited_ids))
 
-            status, msg_data_list = await _run_blocking(
-                mail.uid,
-                "FETCH",
-                message_set,
-                "(BODY.PEEK[])",
-            )
-            if status != "OK":
-                raise EmailSearchError(f"Bulk UID FETCH failed: {msg_data_list}")
+            msg_data_list = await self._uid_command(mail, "FETCH", message_set, "(UID BODY.PEEK[])")
+            metadata_by_uid = await self._fetch_backlink_metadata(mail, limited_ids)
 
             if msg_data_list:
                 for msg_data in msg_data_list:
-                    if msg_data and len(msg_data) >= 2:
+                    if isinstance(msg_data, tuple) and len(msg_data) >= 2 and isinstance(msg_data[1], bytes):
                         try:
                             content = self._format_email_content((msg_data,))
-                            emails.append(content)
+                            uid = self._extract_fetch_number(msg_data[0], "UID")
+                            emails.append(self._merge_backlink_fields(content, metadata_by_uid.get(uid or "")))
                         except Exception as e:
                             logging.warning("Failed to format an email: %s", type(e).__name__)
                             errors.append({"error": str(e), "email_id": "unknown"})
@@ -1842,7 +1952,7 @@ class EmailClient:
 
     async def _execute_search(
         self, mail: imaplib.IMAP4_SSL, search_criteria: str, criteria: SearchCriteria
-    ) -> Tuple[List[Dict[str, str]], PaginationInfo]:
+    ) -> Tuple[List[Dict[str, Any]], PaginationInfo]:
         """Execute IMAP search with pagination support and return formatted email summaries.
 
         Performs an IMAP SEARCH command with the given criteria, supports pagination
@@ -1894,15 +2004,16 @@ class EmailClient:
         logging.debug("Batch fetching %s email headers", len(message_ids))
 
         # Fetch only headers; full bodies and attachments are retrieved on demand.
+        gmail_fetch_item = " X-GM-MSGID" if await self._supports_gmail_extensions(mail) else ""
         msg_data_list = await self._uid_command(
             mail,
             "FETCH",
             message_set,
-            "(UID BODY.PEEK[HEADER.FIELDS (FROM TO DATE SUBJECT MESSAGE-ID)])",
+            f"(UID{gmail_fetch_item} BODY.PEEK[HEADER.FIELDS (FROM TO DATE SUBJECT MESSAGE-ID)])",
         )
 
         # Process the batch response into email summaries
-        email_list: List[Dict[str, str]] = []
+        email_list: List[Dict[str, Any]] = []
         if msg_data_list:
             for msg_data in msg_data_list:
                 if msg_data and len(msg_data) >= 2:  # Ensure we have both ID and content
@@ -1968,7 +2079,7 @@ class EmailClient:
         messages = await self._uid_command(mail, "SEARCH", None, search_criteria)
         return len(messages[0].split()) if messages and messages[0] else 0
 
-    def _format_email_summary(self, msg_data: Tuple[Any, ...]) -> Dict[str, str]:
+    def _format_email_summary(self, msg_data: Tuple[Any, ...]) -> Dict[str, Any]:
         """Format an email message into a summary dict with basic information."""
         email_body = email.message_from_bytes(msg_data[0][1])
         descriptor = msg_data[0][0]
@@ -1983,6 +2094,7 @@ class EmailClient:
             "from": decode_email_header(email_body.get("From"), "Unknown"),
             "date": normalize_email_date(email_body.get("Date", "Unknown")),
             "subject": decode_email_header(email_body.get("Subject"), "No Subject"),
+            "gmail_msgid": self._extract_fetch_number(descriptor, "X-GM-MSGID"),
         }
 
     def _decode_payload(self, part: Any, payload: bytes) -> str:
@@ -2055,6 +2167,7 @@ class EmailClient:
             "subject": decode_email_header(email_body.get("Subject"), "No Subject"),
             "content": body,
             "attachments": attachments,
+            **self._build_backlink_fields(message_id=email_body.get("Message-ID")),
         }
 
     def _raise_no_email_data_error(self) -> None:
