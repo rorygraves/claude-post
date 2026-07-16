@@ -10,6 +10,7 @@ import pytest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from mcp_framework.examples.calculator_server import CalculatorServer
+from mcp_framework.schema_generator import extract_parameter_schema
 
 
 class TestCalculatorServer:
@@ -104,8 +105,6 @@ class TestCalculatorServer:
             description = getattr(method, "_mcp_tool_description", None)
             if not description and method.__doc__:
                 description = method.__doc__.strip().split("\n")[0]
-
-            from mcp_framework.schema_generator import extract_parameter_schema
 
             input_schema = extract_parameter_schema(method)
 

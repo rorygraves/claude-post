@@ -8,6 +8,7 @@ import asyncio
 import email
 import imaplib
 import logging
+import os
 import re
 import smtplib
 import ssl
@@ -215,9 +216,6 @@ def _sanitize_filename(filename: str) -> str:
         >>> _sanitize_filename('file\\x00name.txt')
         'file_name.txt'
     """
-    import os
-    import re
-
     # Remove null bytes
     filename = filename.replace("\x00", "")
 
@@ -253,8 +251,6 @@ def _validate_output_directory(output_dir: str) -> None:
     Raises:
         ValueError: If directory is invalid, doesn't exist, or isn't writable
     """
-    import os
-
     # Must be absolute path
     if not os.path.isabs(output_dir):
         raise ValueError(
@@ -302,8 +298,6 @@ def _get_unique_filepath(output_dir: str, filename: str) -> Tuple[str, str]:
         >>> _get_unique_filepath('/tmp', 'report.pdf')
         ('/tmp/report_1.pdf', 'report_1.pdf')  # If report.pdf exists
     """
-    import os
-
     base_path = os.path.join(output_dir, filename)
 
     # Verify final path is within output_dir (prevent traversal)
@@ -360,8 +354,6 @@ def _format_email_as_markdown(email_content: Dict[str, Any]) -> str:
         >>> '---' in md
         True
     """
-    import re
-
     # Build YAML frontmatter
     lines = ["---"]
 
@@ -420,8 +412,6 @@ def _generate_email_filename(email_content: Dict[str, Any]) -> str:
         >>> filename.endswith('.md')
         True
     """
-    from datetime import datetime
-
     # Parse date
     date_str = email_content.get("date", "")
     try:
@@ -1252,7 +1242,7 @@ class EmailClient:
 
         # Generate filename and get unique path
         filename = _generate_email_filename(content)
-        filepath, actual_filename = _get_unique_filepath(output_dir, filename)
+        filepath, _actual_filename = _get_unique_filepath(output_dir, filename)
 
         # Format as markdown
         markdown_content = _format_email_as_markdown(content)

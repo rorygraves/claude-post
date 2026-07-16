@@ -33,6 +33,7 @@ from pathlib import Path
 # Add src to path so we can import email_client modules
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
+from email_client.config import load_email_config
 from tests.test_email_integration import main as run_tests
 
 
@@ -54,8 +55,6 @@ def check_environment():
 
     # Try to import config to validate it loads properly
     try:
-        from email_client.config import load_email_config
-
         config = load_email_config()
 
         if config.email_address == "your.email@gmail.com" or config.email_password == "your-app-specific-password":

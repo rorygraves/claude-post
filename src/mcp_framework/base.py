@@ -103,7 +103,7 @@ class BaseMCPServer:
     def _register_handlers(self) -> None:
         """Register MCP protocol handlers."""
 
-        @self.server.list_tools()  # type: ignore[no-untyped-call,misc]
+        @self.server.list_tools()  # type: ignore[no-untyped-call,untyped-decorator]
         async def handle_list_tools() -> List[types.Tool]:
             """List all available tools."""
             tools = []
@@ -134,7 +134,7 @@ class BaseMCPServer:
             logger.info("Listed %s tools", len(tools))
             return tools
 
-        @self.server.call_tool()  # type: ignore[no-untyped-call,misc]
+        @self.server.call_tool()  # type: ignore[untyped-decorator]
         async def handle_call_tool(
             name: str, arguments: Optional[Dict[str, Any]]
         ) -> List[Union[types.TextContent, types.ImageContent, types.EmbeddedResource]]:
@@ -170,13 +170,13 @@ class BaseMCPServer:
                 error = {"error": str(e), "type": type(e).__name__}
                 return [types.TextContent(type="text", text=json.dumps(error))]
 
-        @self.server.list_prompts()  # type: ignore[no-untyped-call,misc]
+        @self.server.list_prompts()  # type: ignore[no-untyped-call,untyped-decorator]
         async def handle_list_prompts() -> List[types.Prompt]:
             """Handle list prompts request."""
             # Override in subclass if prompts are needed
             return []
 
-        @self.server.list_resources()  # type: ignore[no-untyped-call,misc]
+        @self.server.list_resources()  # type: ignore[no-untyped-call,untyped-decorator]
         async def handle_list_resources() -> List[types.Resource]:
             """Handle list resources request."""
             # Override in subclass if resources are needed
