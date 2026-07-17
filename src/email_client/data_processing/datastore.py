@@ -98,12 +98,20 @@ class CollectionMetadata:
         self.source_folder = source_folder
         self.created_at = _utc_now()
         self.last_modified = self.created_at
+        # Recency of any access (read or write); drives LRU eviction and is
+        # distinct from last_modified, which only tracks mutations.
+        self.last_accessed = self.created_at
+
+    def touch(self) -> None:
+        self.last_accessed = _utc_now()
 
     def update_from(self, data: pd.DataFrame) -> None:
         self.shape = data.shape
         self.columns = [str(column) for column in data.columns]
         self.dtypes = get_descriptive_dtypes(data)
-        self.last_modified = _utc_now()
+        now = _utc_now()
+        self.last_modified = now
+        self.last_accessed = now
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -115,17 +123,27 @@ class CollectionMetadata:
             "source_folder": self.source_folder,
             "created_at": self.created_at.isoformat(),
             "last_modified": self.last_modified.isoformat(),
+            "last_accessed": self.last_accessed.isoformat(),
         }
 
 
 class DataStore:
     """Thread-safe, bounded collection storage for one MCP server process."""
 
-    def __init__(self, *, max_collections: int = 100, max_rows_per_collection: int = 10_000) -> None:
+    def __init__(
+        self,
+        *,
+        max_collections: int = 100,
+        max_rows_per_collection: int = 10_000,
+        evict_when_full: bool = True,
+    ) -> None:
         if max_collections <= 0 or max_rows_per_collection <= 0:
             raise ValueError("DataStore limits must be positive")
         self.max_collections = max_collections
         self.max_rows_per_collection = max_rows_per_collection
+        # When full, evict the least-recently-used collection to make room
+        # rather than failing the create. Set False for strict, fail-fast mode.
+        self.evict_when_full = evict_when_full
         self._collections: dict[str, pd.DataFrame] = {}
         self._metadata: dict[str, CollectionMetadata] = {}
         self._execution_history: dict[str, list[dict[str, Any]]] = {}
@@ -135,6 +153,32 @@ class DataStore:
         if len(data) > self.max_rows_per_collection:
             raise ValueError(f"Collection has {len(data)} rows; maximum is {self.max_rows_per_collection}")
 
+    def _touch(self, collection_id: str) -> None:
+        """Mark a collection as recently used (called under the lock)."""
+        metadata = self._metadata.get(collection_id)
+        if metadata is not None:
+            metadata.touch()
+
+    def _delete_locked(self, collection_id: str) -> None:
+        """Remove a collection and its bookkeeping. Caller must hold the lock."""
+        del self._collections[collection_id]
+        del self._metadata[collection_id]
+        del self._execution_history[collection_id]
+
+    def _make_room(self) -> str | None:
+        """Evict the least-recently-used collection. Caller must hold the lock.
+
+        Returns the evicted collection id, or None if nothing was evicted.
+        """
+        if len(self._collections) < self.max_collections:
+            return None
+        if not self.evict_when_full:
+            raise ValueError(f"Collection limit reached ({self.max_collections}); delete an existing collection first")
+        lru_id = min(self._metadata, key=lambda cid: self._metadata[cid].last_accessed)
+        self._delete_locked(lru_id)
+        logger.info("Evicted least-recently-used collection %s to stay within limit", lru_id)
+        return lru_id
+
     def create(
         self,
         data: pd.DataFrame,
@@ -143,10 +187,7 @@ class DataStore:
     ) -> dict[str, Any]:
         self._validate_size(data)
         with self._lock:
-            if len(self._collections) >= self.max_collections:
-                raise ValueError(
-                    f"Collection limit reached ({self.max_collections}); delete an existing collection first"
-                )
+            evicted_id = self._make_room()
             collection_id = str(uuid.uuid4())
             collection_name = name or f"collection_{collection_id[:8]}"
             stored = data.copy(deep=True)
@@ -161,12 +202,16 @@ class DataStore:
             )
             self._execution_history[collection_id] = []
             logger.info("Created collection %s with shape %s", collection_id, stored.shape)
-            return self._metadata[collection_id].to_dict()
+            result = self._metadata[collection_id].to_dict()
+            if evicted_id is not None:
+                result["evicted_collection_id"] = evicted_id
+            return result
 
     def get_collection(self, collection_id: str) -> dict[str, Any] | None:
         with self._lock:
             if collection_id not in self._collections:
                 return None
+            self._touch(collection_id)
             metadata = self._metadata[collection_id]
             return {
                 "df": self._collections[collection_id].copy(deep=True),
@@ -359,6 +404,7 @@ class DataStore:
         with self._lock:
             if collection_id not in self._collections:
                 raise ValueError(f"Collection {collection_id} not found")
+            self._touch(collection_id)
             df = self._collections[collection_id]
             metadata = self._metadata[collection_id]
             display_df = df.head(limit) if limit is not None else df
@@ -383,11 +429,20 @@ class DataStore:
         with self._lock:
             if collection_id not in self._collections:
                 raise ValueError(f"Collection {collection_id} not found")
-            del self._collections[collection_id]
-            del self._metadata[collection_id]
-            del self._execution_history[collection_id]
+            self._delete_locked(collection_id)
             logger.info("Deleted collection %s", collection_id)
             return True
+
+    def clear(self) -> int:
+        """Delete every collection, returning the number removed."""
+        with self._lock:
+            count = len(self._collections)
+            self._collections.clear()
+            self._metadata.clear()
+            self._execution_history.clear()
+            if count:
+                logger.info("Cleared %d collection(s) from the store", count)
+            return count
 
     def list_collections(self) -> list[dict[str, Any]]:
         with self._lock:
@@ -405,6 +460,7 @@ class DataStore:
         with self._lock:
             if collection_id not in self._collections:
                 raise ValueError(f"Collection {collection_id} not found")
+            self._touch(collection_id)
             df = self._collections[collection_id]
             return {
                 "metadata": self._metadata[collection_id].to_dict(),

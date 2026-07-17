@@ -99,10 +99,34 @@ def test_collection_reads_are_defensive_copies(store_and_id: tuple[DataStore, st
     assert "score" in store.list_collections()[0]["columns"]
 
 
-def test_store_limits() -> None:
-    store = DataStore(max_collections=1, max_rows_per_collection=2)
+def test_store_limits_strict() -> None:
+    store = DataStore(max_collections=1, max_rows_per_collection=2, evict_when_full=False)
     store.create(pd.DataFrame({"x": [1]}))
     with pytest.raises(ValueError, match="Collection limit"):
         store.create(pd.DataFrame({"x": [2]}))
     with pytest.raises(ValueError, match="maximum"):
         DataStore(max_rows_per_collection=1).create(pd.DataFrame({"x": [1, 2]}))
+
+
+def test_store_evicts_lru_when_full() -> None:
+    store = DataStore(max_collections=2)
+    first = store.create(pd.DataFrame({"x": [1]}), name="first")["id"]
+    second = store.create(pd.DataFrame({"x": [2]}), name="second")["id"]
+
+    # Touch `first` so `second` becomes the least-recently-used collection.
+    store.preview(first)
+
+    result = store.create(pd.DataFrame({"x": [3]}), name="third")
+    assert result["evicted_collection_id"] == second
+
+    remaining = {c["id"] for c in store.list_collections()}
+    assert remaining == {first, result["id"]}
+
+
+def test_store_clear() -> None:
+    store = DataStore(max_collections=5)
+    store.create(pd.DataFrame({"x": [1]}))
+    store.create(pd.DataFrame({"x": [2]}))
+    assert store.clear() == 2
+    assert store.list_collections() == []
+    assert store.clear() == 0

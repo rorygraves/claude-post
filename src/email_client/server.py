@@ -340,6 +340,35 @@ class EmailMCPServer(BaseMCPServer):
         """
         return self.datastore.list_collections()
 
+    @mcp_tool(name="drop")
+    async def drop_collection(self, collection_id: str) -> Dict[str, Any]:
+        """Delete a single email data collection, freeing its slot in the store.
+
+        Args:
+            collection_id: ID of the collection to delete
+
+        Returns:
+            Dictionary confirming the deletion and remaining collection count
+        """
+        self.datastore.delete(collection_id)
+        return {
+            "deleted": collection_id,
+            "remaining": len(self.datastore.list_collections()),
+        }
+
+    @mcp_tool(name="clear")
+    async def clear_collections(self) -> Dict[str, Any]:
+        """Delete all email data collections, freeing the entire in-memory store.
+
+        Use this to reclaim space when the collection store is full. Collections
+        are derived search results, not mailbox data, so this never touches email.
+
+        Returns:
+            Dictionary with the number of collections cleared
+        """
+        cleared = self.datastore.clear()
+        return {"cleared": cleared, "remaining": 0}
+
     @mcp_tool(name="preview")
     async def preview(self, collection_id: str, rows: int = 5) -> Dict[str, Any]:
         """Preview an email collection's structure, data types, and sample records.
