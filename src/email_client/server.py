@@ -13,6 +13,7 @@ import pandas as pd
 
 from mcp_framework import BaseMCPServer, mcp_tool
 
+from .config import DEFAULT_ACCOUNT_ALIAS, load_accounts_config
 from .data_processing import DataStore
 from .email_client import (
     EmailClient,
@@ -32,18 +33,57 @@ class EmailMCPServer(BaseMCPServer):
         *,
         email_client: EmailClient | None = None,
         datastore: DataStore | None = None,
+        clients: dict[str, EmailClient] | None = None,
+        primary_alias: str | None = None,
     ) -> None:
         """Initialize the email MCP server.
 
         Args:
             enable_write_operations: Whether to enable move/delete operations
+            email_client: A single pre-built client (registered as the primary account).
+            clients: A pre-built alias -> client registry (takes precedence over email_client).
+            primary_alias: Which alias in ``clients`` is primary (defaults to the first).
         """
         self.write_operations_enabled = enable_write_operations
         self.send_operations_enabled = enable_send_operations
         self.file_operations_enabled = enable_file_operations
-        self.email_client = email_client or EmailClient()
         self.datastore = datastore or DataStore()
-        super().__init__("email", "0.3.0", tool_prefix="mail-")
+
+        # Client registry. Injected clients take precedence and keep credential
+        # loading lazy (so `--describe` needs no .env); otherwise the accounts
+        # configuration is loaded on first mailbox use.
+        if clients is not None:
+            self._clients: dict[str, EmailClient] = dict(clients)
+            self._primary_alias = primary_alias or next(iter(self._clients))
+            self._accounts_ready = True
+        elif email_client is not None:
+            self._clients = {DEFAULT_ACCOUNT_ALIAS: email_client}
+            self._primary_alias = DEFAULT_ACCOUNT_ALIAS
+            self._accounts_ready = True
+        else:
+            self._clients = {}
+            self._primary_alias = DEFAULT_ACCOUNT_ALIAS
+            self._accounts_ready = False
+        super().__init__("email", "0.4.0", tool_prefix="mail-")
+
+    def _ensure_accounts_ready(self) -> None:
+        """Load configured accounts into the client registry on first use."""
+        if self._accounts_ready:
+            return
+        accounts = load_accounts_config()
+        self._clients = {alias: EmailClient(config) for alias, config in accounts.accounts.items()}
+        self._primary_alias = accounts.primary_alias
+        self._accounts_ready = True
+
+    def _client_for(self, account: str | None) -> EmailClient:
+        """Return the email client for ``account``, or the primary when None."""
+        self._ensure_accounts_ready()
+        alias = account or self._primary_alias
+        client = self._clients.get(alias)
+        if client is None:
+            available = ", ".join(sorted(self._clients))
+            raise ValueError(f"Unknown account '{alias}'. Configured accounts: {available}")
+        return client
 
     def _is_tool_enabled(self, method: Any) -> bool:
         capability = getattr(method, "_mcp_tool_capability", None)
@@ -75,6 +115,24 @@ class EmailMCPServer(BaseMCPServer):
             help="Enable attachment download and export tools. Disabled by default.",
         )
 
+    @mcp_tool(name="accounts")
+    async def accounts(self) -> List[Dict[str, Any]]:
+        """List the configured email accounts that can be targeted with the `account` parameter.
+
+        Returns:
+            List of dicts with alias, email_address, and whether the account is primary.
+            The primary account is used by any tool call that omits `account`.
+        """
+        self._ensure_accounts_ready()
+        return [
+            {
+                "alias": alias,
+                "email_address": self._clients[alias].email_address,
+                "primary": alias == self._primary_alias,
+            }
+            for alias in sorted(self._clients)
+        ]
+
     @mcp_tool(name="search")
     async def search(
         self,
@@ -89,6 +147,7 @@ class EmailMCPServer(BaseMCPServer):
         start_from: int = 0,
         collection_name: Optional[str] = None,
         direction: Literal["newest", "oldest"] = "newest",
+        account: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Search emails and automatically create a data collection from the results.
 
@@ -106,6 +165,8 @@ class EmailMCPServer(BaseMCPServer):
             start_from: Starting position for pagination (optional, defaults to 0).
             collection_name: Optional descriptive name for the created collection.
             direction: Sort direction for email results (optional, defaults to 'newest').
+            account: Account alias to search (optional). Defaults to the primary account.
+                Use 'mail-accounts' to list configured accounts.
 
         Returns:
             Collection metadata dictionary
@@ -133,7 +194,8 @@ class EmailMCPServer(BaseMCPServer):
             direction=direction,
         )
 
-        email_list, pagination = await self.email_client.search_emails(criteria)
+        client = self._client_for(account)
+        email_list, pagination = await client.search_emails(criteria)
 
         if not email_list:
             return {
@@ -143,7 +205,9 @@ class EmailMCPServer(BaseMCPServer):
 
         # Create collection from search results
         df = pd.DataFrame(email_list)
-        collection_metadata = self.datastore.create(df, collection_name, source_folder=folder)
+        collection_metadata = self.datastore.create(
+            df, collection_name, source_folder=folder, account=account or self._primary_alias
+        )
 
         return {
             **collection_metadata,
@@ -156,6 +220,7 @@ class EmailMCPServer(BaseMCPServer):
         email_id: Optional[str] = None,
         email_ids: Optional[List[str]] = None,
         folder: str = "inbox",
+        account: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Get the full content of one or more emails by ID.
 
@@ -166,6 +231,7 @@ class EmailMCPServer(BaseMCPServer):
             email_id: Single email ID to retrieve (for backwards compatibility)
             email_ids: List of email IDs for bulk retrieval (max 50)
             folder: Folder containing the email(s) (defaults to 'inbox')
+            account: Account alias to read from (optional). Defaults to the primary account.
 
         Returns:
             For single ID: Dictionary with email details, Message-ID, stable Gmail IDs, and permalink
@@ -181,16 +247,18 @@ class EmailMCPServer(BaseMCPServer):
         if not ids_to_fetch:
             return {"error": "Either email_id or email_ids is required"}
 
+        client = self._client_for(account)
+
         # Single email - maintain backwards compatible response
         if len(ids_to_fetch) == 1:
-            email_content = await self.email_client.get_email_content(ids_to_fetch[0], folder)
+            email_content = await client.get_email_content(ids_to_fetch[0], folder)
             if email_content:
                 return email_content
             else:
                 return {"error": "No email content found."}
 
         # Bulk retrieval
-        result = await self.email_client.get_email_contents_bulk(ids_to_fetch, folder)
+        result = await client.get_email_contents_bulk(ids_to_fetch, folder)
         return result
 
     @mcp_tool(name="download-attachment", capability="filesystem")
@@ -200,6 +268,7 @@ class EmailMCPServer(BaseMCPServer):
         attachment_index: int,
         output_dir: str,
         folder: str = "inbox",
+        account: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Download a specific attachment from an email and save to disk.
 
@@ -211,6 +280,7 @@ class EmailMCPServer(BaseMCPServer):
             attachment_index: Zero-based index of the attachment to download (from attachments list)
             output_dir: Absolute path to directory where file should be saved (e.g., '/Users/name/Downloads')
             folder: Folder containing the email (defaults to 'inbox')
+            account: Account alias to read from (optional). Defaults to the primary account.
 
         Returns:
             Dictionary containing:
@@ -225,7 +295,8 @@ class EmailMCPServer(BaseMCPServer):
             Error if attachment not found, output_dir is invalid, or exceeds 25MB size limit
         """
         try:
-            result = await self.email_client.download_attachment(email_id, attachment_index, output_dir, folder)
+            client = self._client_for(account)
+            result = await client.download_attachment(email_id, attachment_index, output_dir, folder)
             if result:
                 return result
             else:
@@ -234,7 +305,14 @@ class EmailMCPServer(BaseMCPServer):
             return {"error": str(e)}
 
     @mcp_tool(name="send", capability="send")
-    async def send(self, to: List[str], subject: str, content: str, cc: Optional[List[str]] = None) -> str:
+    async def send(
+        self,
+        to: List[str],
+        subject: str,
+        content: str,
+        cc: Optional[List[str]] = None,
+        account: Optional[str] = None,
+    ) -> str:
         """Send an email after user confirms the details.
 
         Before calling this, first show the email details to the user for confirmation.
@@ -244,6 +322,7 @@ class EmailMCPServer(BaseMCPServer):
             subject: Confirmed email subject
             content: Confirmed email content
             cc: List of CC recipient email addresses (optional, confirmed)
+            account: Account alias to send from (optional). Defaults to the primary account.
 
         Returns:
             Success message or error details
@@ -255,25 +334,29 @@ class EmailMCPServer(BaseMCPServer):
             cc_addresses=cc or [],
         )
 
-        await self.email_client.send_email(message)
+        await self._client_for(account).send_email(message)
         return "Email sent successfully."
 
     @mcp_tool(name="folders")
-    async def folders(self) -> List[Dict[str, str]]:
+    async def folders(self, account: Optional[str] = None) -> List[Dict[str, str]]:
         """List all available email folders that can be used with other tools.
+
+        Args:
+            account: Account alias to list folders for (optional). Defaults to the primary account.
 
         Returns:
             List of folder dictionaries with name, display_name, and attributes
         """
-        return await self.email_client.list_folders()
+        return await self._client_for(account).list_folders()
 
     @mcp_tool(name="count-daily")
-    async def count_daily(self, start_date: str, end_date: str) -> Dict[str, int]:
+    async def count_daily(self, start_date: str, end_date: str, account: Optional[str] = None) -> Dict[str, int]:
         """Count emails received for each day in a date range.
 
         Args:
             start_date: Start date in YYYY-MM-DD format
             end_date: End date in YYYY-MM-DD format
+            account: Account alias to count in (optional). Defaults to the primary account.
 
         Returns:
             Dictionary mapping dates to email counts
@@ -282,7 +365,7 @@ class EmailMCPServer(BaseMCPServer):
         datetime.strptime(start_date, "%Y-%m-%d")
         datetime.strptime(end_date, "%Y-%m-%d")
 
-        return await self.email_client.count_daily_emails(start_date, end_date)
+        return await self._client_for(account).count_daily_emails(start_date, end_date)
 
     @mcp_tool(name="transform")
     async def transform(
@@ -439,6 +522,8 @@ class EmailMCPServer(BaseMCPServer):
         # Get the DataFrame and source folder
         df = collection["df"]
         source_folder = collection.get("source_folder", "inbox")
+        # Export from whichever account the collection was searched in.
+        account = collection["metadata"].get("account")
 
         # Extract email IDs from the collection
         if "id" not in df.columns:
@@ -451,7 +536,7 @@ class EmailMCPServer(BaseMCPServer):
 
         # Export emails using the bulk method
         try:
-            result = await self.email_client.export_emails_bulk(
+            result = await self._client_for(account).export_emails_bulk(
                 email_ids=email_ids,
                 output_dir=output_dir,
                 folder=source_folder,
@@ -462,18 +547,25 @@ class EmailMCPServer(BaseMCPServer):
             return {"error": str(e)}
 
     @mcp_tool(name="move", capability="mailbox_write")
-    async def move_emails(self, email_ids: List[str], destination_folder: str, source_folder: str = "inbox") -> str:
+    async def move_emails(
+        self,
+        email_ids: List[str],
+        destination_folder: str,
+        source_folder: str = "inbox",
+        account: Optional[str] = None,
+    ) -> str:
         """Move one or more emails from one folder to another.
 
         Args:
             email_ids: Array of email IDs to move
             destination_folder: Destination folder to move the emails to
             source_folder: Source folder containing the emails (defaults to 'inbox')
+            account: Account alias the emails belong to (optional). Defaults to the primary account.
 
         Returns:
             Success message with details
         """
-        await self.email_client.move_email(email_ids, source_folder, destination_folder)
+        await self._client_for(account).move_email(email_ids, source_folder, destination_folder)
 
         count = len(email_ids)
         email_word = "email" if count == 1 else "emails"
@@ -484,18 +576,25 @@ class EmailMCPServer(BaseMCPServer):
         )
 
     @mcp_tool(name="delete", capability="mailbox_write")
-    async def delete_emails(self, email_ids: List[str], folder: str = "inbox", permanent: bool = False) -> str:
+    async def delete_emails(
+        self,
+        email_ids: List[str],
+        folder: str = "inbox",
+        permanent: bool = False,
+        account: Optional[str] = None,
+    ) -> str:
         """Delete one or more emails (move to trash by default, or permanently).
 
         Args:
             email_ids: Array of email IDs to delete
             folder: Folder containing the email(s) (defaults to 'inbox')
             permanent: If true, permanently delete. If false (default), move to trash
+            account: Account alias the emails belong to (optional). Defaults to the primary account.
 
         Returns:
             Success message with details
         """
-        await self.email_client.delete_email(email_ids, folder, permanent)
+        await self._client_for(account).delete_email(email_ids, folder, permanent)
 
         count = len(email_ids)
         email_word = "email" if count == 1 else "emails"

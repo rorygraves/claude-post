@@ -1,0 +1,23 @@
+# Multi-account configuration for ClaudePost.
+#
+# Copy to `accounts.toml` (or point ACCOUNTS_FILE at it) to enable more than one
+# mailbox. If no accounts file exists, ClaudePost falls back to the single
+# EMAIL_ADDRESS / EMAIL_PASSWORD values in .env, aliased "default".
+#
+# Each [accounts.<alias>] table defines one account. The alias is what you pass
+# as the `account` parameter to tools (e.g. mail-search(account="personal")).
+# Passwords may be inline or reference an environment variable as ${VAR_NAME},
+# which keeps secrets out of the file.
+
+[accounts.work]
+email_address = "you@company.com"
+password = "${WORK_APP_PASSWORD}"
+primary = true                       # used by any tool call that omits `account`
+# imap_server / smtp_server default to Gmail; override for other providers:
+# imap_server = "outlook.office365.com"
+# smtp_server = "smtp.office365.com"
+
+[accounts.personal]
+email_address = "you@gmail.com"
+password = "${PERSONAL_APP_PASSWORD}"
+# smtp_port = 465                    # smtp_security defaults to "ssl" for port 465

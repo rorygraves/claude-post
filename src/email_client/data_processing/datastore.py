@@ -89,6 +89,7 @@ class CollectionMetadata:
         columns: list[str],
         dtypes: dict[str, str],
         source_folder: str | None = None,
+        account: str | None = None,
     ) -> None:
         self.id = collection_id
         self.name = name
@@ -96,6 +97,7 @@ class CollectionMetadata:
         self.columns = columns
         self.dtypes = dtypes
         self.source_folder = source_folder
+        self.account = account
         self.created_at = _utc_now()
         self.last_modified = self.created_at
         # Recency of any access (read or write); drives LRU eviction and is
@@ -121,6 +123,7 @@ class CollectionMetadata:
             "columns": self.columns,
             "dtypes": self.dtypes,
             "source_folder": self.source_folder,
+            "account": self.account,
             "created_at": self.created_at.isoformat(),
             "last_modified": self.last_modified.isoformat(),
             "last_accessed": self.last_accessed.isoformat(),
@@ -184,6 +187,7 @@ class DataStore:
         data: pd.DataFrame,
         name: str | None = None,
         source_folder: str | None = None,
+        account: str | None = None,
     ) -> dict[str, Any]:
         self._validate_size(data)
         with self._lock:
@@ -199,6 +203,7 @@ class DataStore:
                 columns=[str(column) for column in stored.columns],
                 dtypes=get_descriptive_dtypes(stored),
                 source_folder=source_folder,
+                account=account,
             )
             self._execution_history[collection_id] = []
             logger.info("Created collection %s with shape %s", collection_id, stored.shape)

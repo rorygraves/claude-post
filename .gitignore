@@ -41,6 +41,8 @@ email_client.log
 .env
 .env.local
 .env.*.local
+# Multi-account config may hold credentials; keep only the .example in git
+accounts.toml
 # Test files
 test.py
 
