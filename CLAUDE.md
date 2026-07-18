@@ -117,6 +117,14 @@ Core IMAP/SMTP operations with security hardening:
 
 **IMAP UIDs are folder-scoped.** A message's UID in `INBOX` differs from its UID in `[Gmail]/Bin`, and moving a message changes its UID. `mail-move` and `mail-delete` therefore resolve the requested UIDs against a `UID SEARCH` in the target folder (`_filter_existing_uids`) and act only on those that actually exist. They return a `MailboxOperationResult` (`affected` vs `not_found`) so the tool reports what the server actually did, not the input — and raise if *none* of the requested UIDs exist rather than silently succeeding. After any move, re-search the destination folder to get current UIDs before operating on them again.
 
+**Stable Gmail IDs.** To avoid the UID-volatility problem entirely, `mail-move`, `mail-delete`, and `mail-get-content` accept `gmail_msgid(s)` (Gmail's `X-GM-MSGID`) instead of `email_ids`. These are stable across folders and moves; the client resolves each to the current UID in the target folder via `UID SEARCH X-GM-MSGID <id>` (`_resolve_gmail_msgids`) and reports results back in the identifier space you passed. Prefer these when a message may have already moved. Every search row already carries `gmail_msgid`.
+
+### Server-side aggregation and counting
+
+Two tools keep large scans out of context and off the collection store:
+- **`mail-count(folder, filters)`** — returns just `{folder, count}` for a filter, creating no collection. Use instead of `mail-search(max_results=1)` when you only need a total.
+- **`mail-aggregate(group_by, folder, filters, top_n)`** — groups matching emails server-side by `sender`, `recipient`, or `date` and returns a small top-N frequency table (`groups: [{key, count}]`) with no collection and no per-row data. Only the grouping-key header is fetched (bodies never are); sender/recipient keys are normalized to a lowercased bare address. This replaces paging thousands of rows into context to count them.
+
 ### Attachment Downloads
 
 The `mail-download-attachment` tool saves files to disk instead of returning base64 data to context:

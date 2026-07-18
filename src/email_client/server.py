@@ -221,22 +221,33 @@ class EmailMCPServer(BaseMCPServer):
         email_ids: Optional[List[str]] = None,
         folder: str = "inbox",
         account: Optional[str] = None,
+        gmail_msgid: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Get the full content of one or more emails by ID.
 
-        Supports both single email retrieval (for backwards compatibility) and
-        bulk retrieval for efficiency.
+        Supports single retrieval (by IMAP UID or stable Gmail id) and bulk retrieval.
 
         Args:
-            email_id: Single email ID to retrieve (for backwards compatibility)
-            email_ids: List of email IDs for bulk retrieval (max 50)
-            folder: Folder containing the email(s) (defaults to 'inbox')
+            email_id: Single IMAP UID to retrieve.
+            email_ids: List of IMAP UIDs for bulk retrieval (max 50).
+            folder: Folder containing the email(s) (defaults to 'inbox').
             account: Account alias to read from (optional). Defaults to the primary account.
+            gmail_msgid: Stable Gmail message id (X-GM-MSGID) for a single email; resolved
+                to the current UID in `folder`. Survives folder moves, unlike email_id.
 
         Returns:
             For single ID: Dictionary with email details, Message-ID, stable Gmail IDs, and permalink
             For multiple IDs: Dictionary with 'emails' list, 'fetched' count, and 'errors' list
         """
+        client = self._client_for(account)
+
+        # Stable Gmail id path (single email only).
+        if gmail_msgid:
+            if email_id or email_ids:
+                return {"error": "Provide gmail_msgid alone, not with email_id/email_ids"}
+            email_content = await client.get_email_content(folder=folder, gmail_msgid=gmail_msgid)
+            return email_content or {"error": "No email content found."}
+
         # Collect all IDs to fetch
         ids_to_fetch: List[str] = []
         if email_id:
@@ -245,9 +256,7 @@ class EmailMCPServer(BaseMCPServer):
             ids_to_fetch.extend(email_ids)
 
         if not ids_to_fetch:
-            return {"error": "Either email_id or email_ids is required"}
-
-        client = self._client_for(account)
+            return {"error": "One of email_id, email_ids, or gmail_msgid is required"}
 
         # Single email - maintain backwards compatible response
         if len(ids_to_fetch) == 1:
@@ -366,6 +375,96 @@ class EmailMCPServer(BaseMCPServer):
         datetime.strptime(end_date, "%Y-%m-%d")
 
         return await self._client_for(account).count_daily_emails(start_date, end_date)
+
+    @mcp_tool(name="count")
+    async def count(
+        self,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
+        subject: Optional[str] = None,
+        sender: Optional[str] = None,
+        to: Optional[str] = None,
+        body: Optional[str] = None,
+        folder: str = "inbox",
+        account: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Count emails matching a filter WITHOUT creating a collection or fetching rows.
+
+        Use this instead of mail-search when you only need a total (e.g. "how many from
+        X?"). It creates no collection, so it never consumes a collection slot.
+
+        Args:
+            start_date: Start date YYYY-MM-DD (optional).
+            end_date: End date YYYY-MM-DD (optional).
+            subject: Substring to match in the subject (optional).
+            sender: Substring to match in the sender (optional).
+            to: Substring to match in the recipient (optional).
+            body: Substring to match in the body (optional).
+            folder: Folder to count in (defaults to 'inbox').
+            account: Account alias (optional). Defaults to the primary account.
+
+        Returns:
+            {folder, count}
+        """
+        criteria = SearchCriteria(
+            folder=folder,
+            start_date=start_date,
+            end_date=end_date,
+            subject=subject,
+            sender=sender,
+            to=to,
+            body=body,
+        )
+        total = await self._client_for(account).count_emails(criteria)
+        return {"folder": folder, "count": total}
+
+    @mcp_tool(name="aggregate")
+    async def aggregate(
+        self,
+        group_by: Literal["sender", "recipient", "date"],
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
+        subject: Optional[str] = None,
+        sender: Optional[str] = None,
+        to: Optional[str] = None,
+        body: Optional[str] = None,
+        folder: str = "inbox",
+        top_n: int = 20,
+        account: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Group matching emails server-side and return a small top-N frequency table.
+
+        Answers "who emails me most?", "how many per day?", etc. in ONE call, without
+        paging thousands of rows into context and without creating a collection. Only the
+        grouping-key header is fetched; bodies are never retrieved.
+
+        Args:
+            group_by: Grouping dimension - 'sender', 'recipient', or 'date' (by day).
+                'sender'/'recipient' are grouped by normalized (lowercased) email address.
+            start_date: Start date YYYY-MM-DD (optional).
+            end_date: End date YYYY-MM-DD (optional).
+            subject: Substring to match in the subject (optional).
+            sender: Substring to match in the sender (optional).
+            to: Substring to match in the recipient (optional).
+            body: Substring to match in the body (optional).
+            folder: Folder to aggregate over (defaults to 'inbox').
+            top_n: Number of most-frequent groups to return (defaults to 20).
+            account: Account alias (optional). Defaults to the primary account.
+
+        Returns:
+            {group_by, folder, total_matched, total_grouped, distinct_keys, top_n,
+             groups: [{key, count}, ...], truncated}
+        """
+        criteria = SearchCriteria(
+            folder=folder,
+            start_date=start_date,
+            end_date=end_date,
+            subject=subject,
+            sender=sender,
+            to=to,
+            body=body,
+        )
+        return await self._client_for(account).aggregate_emails(criteria, group_by, top_n)
 
     @mcp_tool(name="transform")
     async def transform(
@@ -549,24 +648,34 @@ class EmailMCPServer(BaseMCPServer):
     @mcp_tool(name="move", capability="mailbox_write")
     async def move_emails(
         self,
-        email_ids: List[str],
-        destination_folder: str,
+        email_ids: Optional[List[str]] = None,
+        destination_folder: str = "",
         source_folder: str = "inbox",
         account: Optional[str] = None,
+        gmail_msgids: Optional[List[str]] = None,
     ) -> str:
         """Move one or more emails from one folder to another.
 
+        Target messages by IMAP UID (`email_ids`) or by stable Gmail id (`gmail_msgids`,
+        X-GM-MSGID, which survives folder moves). Provide exactly one. Prefer gmail_msgids
+        when moving messages that may have been moved before — UIDs go stale across folders.
+
         Args:
-            email_ids: Array of email IDs to move
-            destination_folder: Destination folder to move the emails to
+            email_ids: IMAP UIDs to move
+            destination_folder: Destination folder to move the emails to (required)
             source_folder: Source folder containing the emails (defaults to 'inbox')
             account: Account alias the emails belong to (optional). Defaults to the primary account.
+            gmail_msgids: Stable Gmail message ids to move, resolved to current UIDs in source_folder.
 
         Returns:
             Message reporting how many emails were actually moved, plus any IDs that
             were not found in the source folder.
         """
-        result = await self._client_for(account).move_email(email_ids, source_folder, destination_folder)
+        if not destination_folder:
+            return "Error: destination_folder is required."
+        result = await self._client_for(account).move_email(
+            email_ids, source_folder, destination_folder, gmail_msgids=gmail_msgids
+        )
 
         moved = len(result.affected)
         email_word = "email" if moved == 1 else "emails"
@@ -583,24 +692,29 @@ class EmailMCPServer(BaseMCPServer):
     @mcp_tool(name="delete", capability="mailbox_write")
     async def delete_emails(
         self,
-        email_ids: List[str],
+        email_ids: Optional[List[str]] = None,
         folder: str = "inbox",
         permanent: bool = False,
         account: Optional[str] = None,
+        gmail_msgids: Optional[List[str]] = None,
     ) -> str:
         """Delete one or more emails (move to trash by default, or permanently).
 
+        Target messages by IMAP UID (`email_ids`) or by stable Gmail id (`gmail_msgids`,
+        X-GM-MSGID, which survives folder moves). Provide exactly one.
+
         Args:
-            email_ids: Array of email IDs to delete
+            email_ids: IMAP UIDs to delete
             folder: Folder containing the email(s) (defaults to 'inbox')
             permanent: If true, permanently delete. If false (default), move to trash
             account: Account alias the emails belong to (optional). Defaults to the primary account.
+            gmail_msgids: Stable Gmail message ids to delete, resolved to current UIDs in folder.
 
         Returns:
             Message reporting how many emails were actually deleted, plus any IDs that
             were not found in the folder.
         """
-        result = await self._client_for(account).delete_email(email_ids, folder, permanent)
+        result = await self._client_for(account).delete_email(email_ids, folder, permanent, gmail_msgids=gmail_msgids)
 
         affected = len(result.affected)
         email_word = "email" if affected == 1 else "emails"

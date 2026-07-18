@@ -12,6 +12,7 @@ import os
 import re
 import smtplib
 import ssl
+from collections import Counter
 from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import dataclass
@@ -19,7 +20,7 @@ from datetime import datetime, timedelta
 from email.header import decode_header, make_header
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
-from email.utils import parsedate_to_datetime
+from email.utils import parseaddr, parsedate_to_datetime
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional, ParamSpec, Tuple, TypeVar, Union
 from urllib.parse import quote
@@ -32,6 +33,9 @@ MAX_EMAILS = 500  # Hard upper bound for one search page
 MAX_ATTACHMENT_SIZE = 25 * 1024 * 1024
 GMAIL_WEB_BASE_URL = "https://mail.google.com/mail/u/0/"
 GMAIL_METADATA_FETCH = "(X-GM-MSGID X-GM-THRID BODY.PEEK[HEADER.FIELDS (MESSAGE-ID)])"
+
+# Grouping dimensions supported by aggregate_emails / mail-aggregate.
+AGGREGATE_GROUPINGS = frozenset({"sender", "recipient", "date"})
 
 P = ParamSpec("P")
 R = TypeVar("R")
@@ -677,6 +681,17 @@ class EmailClient:
         if any(not isinstance(email_id, str) or not email_id.isdigit() or int(email_id) <= 0 for email_id in email_ids):
             raise ValueError("Email IDs must be positive numeric IMAP UIDs")
 
+    @staticmethod
+    def _validate_gmail_msgids(gmail_msgids: List[str], *, maximum: int = 500) -> None:
+        if not gmail_msgids:
+            raise ValueError("At least one gmail_msgid is required")
+        if len(gmail_msgids) > maximum:
+            raise ValueError(f"At most {maximum} gmail_msgids may be processed at once")
+        # X-GM-MSGID is an unsigned 64-bit integer; enforce digits-only to prevent
+        # search-command injection and reject junk early.
+        if any(not isinstance(msgid, str) or not msgid.isdigit() or int(msgid) <= 0 for msgid in gmail_msgids):
+            raise ValueError("gmail_msgids must be positive numeric X-GM-MSGID values")
+
     async def connect_imap(self) -> imaplib.IMAP4_SSL:
         """Establish an authenticated SSL IMAP connection.
 
@@ -903,6 +918,47 @@ class EmailClient:
                 existing.append(uid)
         return existing
 
+    async def _resolve_gmail_msgids(
+        self, mail: imaplib.IMAP4_SSL, gmail_msgids: list[str]
+    ) -> tuple[dict[str, str], list[str]]:
+        """Resolve stable X-GM-MSGID values to current UIDs in the selected folder.
+
+        Gmail message IDs are stable across folders and moves, unlike IMAP UIDs.
+        Returns ({gmail_msgid: uid}, [unresolved_gmail_msgids]).
+        """
+        if not await self._supports_gmail_extensions(mail):
+            raise EmailSearchError(
+                "Server does not support the Gmail extensions (X-GM-MSGID) required for gmail_msgid lookups"
+            )
+        resolved: dict[str, str] = {}
+        unresolved: list[str] = []
+        for msgid in gmail_msgids:
+            data = await self._uid_command(mail, "SEARCH", None, f"X-GM-MSGID {msgid}")
+            uids = data[0].split() if data and data[0] else []
+            if uids:
+                resolved[msgid] = uids[-1].decode("ascii")
+            else:
+                unresolved.append(msgid)
+        return resolved, unresolved
+
+    async def _resolve_action_targets(
+        self,
+        mail: imaplib.IMAP4_SSL,
+        email_ids: list[str] | None,
+        gmail_msgids: list[str] | None,
+    ) -> tuple[list[str], dict[str, str]]:
+        """Resolve the requested identifiers to UIDs in the selected folder.
+
+        Returns (uids_to_act_on, uid -> original caller identifier). Unresolved
+        gmail_msgids are simply omitted; they surface as not_found because the
+        result is built from the full requested list.
+        """
+        if gmail_msgids:
+            resolved, _unresolved = await self._resolve_gmail_msgids(mail, gmail_msgids)
+            return list(resolved.values()), {uid: msgid for msgid, uid in resolved.items()}
+        ids = email_ids or []
+        return list(ids), {uid: uid for uid in ids}
+
     async def _move_uids(
         self,
         mail: imaplib.IMAP4_SSL,
@@ -1049,22 +1105,44 @@ class EmailClient:
             if mail:
                 await self.close_imap_connection(mail)
 
-    async def get_email_content(self, email_id: str, folder: str = "inbox") -> Optional[Dict[str, Any]]:
+    async def get_email_content(
+        self,
+        email_id: Optional[str] = None,
+        folder: str = "inbox",
+        *,
+        gmail_msgid: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
         """Get full content of a specific email.
 
+        Target the email either by folder-scoped IMAP UID (``email_id``) or by stable
+        Gmail message id (``gmail_msgid``, X-GM-MSGID). Provide exactly one.
+
         Args:
-            email_id: The ID of the email to retrieve
-            folder: Folder containing the email (defaults to 'inbox')
+            email_id: The IMAP UID of the email to retrieve.
+            folder: Folder containing the email (defaults to 'inbox').
+            gmail_msgid: Stable Gmail message id, resolved to the current UID in ``folder``.
 
         Returns:
             Email content with RFC-822 and optional stable Gmail backlink fields.
         """
-        self._validate_email_ids([email_id], maximum=1)
+        if (email_id is None) == (gmail_msgid is None):
+            raise ValueError("Provide exactly one of email_id or gmail_msgid")
+        if gmail_msgid is None:
+            self._validate_email_ids([email_id], maximum=1)  # type: ignore[list-item]
+        else:
+            self._validate_gmail_msgids([gmail_msgid], maximum=1)
         mail = None
         try:
             mail = await self.connect_imap()
             await self._select_folder(mail, folder)
 
+            if gmail_msgid is not None:
+                resolved, _unresolved = await self._resolve_gmail_msgids(mail, [gmail_msgid])
+                if not resolved:
+                    raise EmailSearchError(f"gmail_msgid {gmail_msgid} was not found in '{folder}'")
+                email_id = next(iter(resolved.values()))
+
+            assert email_id is not None  # guaranteed by the exactly-one check above
             msg_data = await self._uid_command(mail, "FETCH", email_id, "(UID BODY.PEEK[])")
             message_response = next(
                 (
@@ -1448,48 +1526,91 @@ class EmailClient:
             raise EmailSendError(f"Failed to send email: {e!s}") from e
 
     async def delete_email(
-        self, email_ids: Union[str, List[str]], folder: str = "inbox", permanent: bool = False
+        self,
+        email_ids: Union[str, List[str], None] = None,
+        folder: str = "inbox",
+        permanent: bool = False,
+        *,
+        gmail_msgids: Union[str, List[str], None] = None,
     ) -> "MailboxOperationResult":
         """Delete one or more emails by moving to trash or permanently deleting.
 
+        Target messages either by folder-scoped IMAP UID (``email_ids``) or by stable
+        Gmail message id (``gmail_msgids``, X-GM-MSGID), which survives folder moves.
+        Provide exactly one.
+
         Args:
-            email_ids: The ID(s) of the email(s) to delete. Can be a single string or list of strings.
-            folder: The folder containing the email(s) ('inbox' or 'sent')
-            permanent: If True, permanently delete (mark + expunge).
-                      If False (default), move to trash folder.
+            email_ids: IMAP UID(s) to delete (string or list).
+            folder: The folder containing the email(s) ('inbox' or 'sent').
+            permanent: If True, permanently delete (mark + expunge). Else move to trash.
+            gmail_msgids: Stable Gmail message id(s), resolved to the current UID in
+                ``folder`` server-side.
 
         Returns:
-            MailboxOperationResult describing which UIDs were deleted and which were not
-            found in the folder.
+            MailboxOperationResult (in the identifier space you supplied) describing which
+            messages were deleted and which were not found in the folder.
 
         Raises:
-            EmailDeletionError: If the deletion fails, or if none of the requested UIDs
-                exist in the folder (IMAP UIDs are folder-scoped).
+            EmailDeletionError: If the deletion fails, or if none of the requested
+                messages were found in the folder.
             EmailConnectionError: If IMAP connection fails
         """
-        # Convert single email ID to list for uniform processing
-        ids_to_process = [email_ids] if isinstance(email_ids, str) else email_ids
+        ids_list, gmail_list, requested = self._normalize_target_identifiers(email_ids, gmail_msgids, action="deletion")
 
-        if not ids_to_process:
-            raise EmailDeletionError("No email IDs provided for deletion")
-        self._validate_email_ids(ids_to_process)
-
-        # Process all emails in a single connection
         if permanent:
-            affected = await self._permanent_delete_emails(ids_to_process, folder)
+            affected = await self._permanent_delete_emails(folder, email_ids=ids_list, gmail_msgids=gmail_list)
         else:
-            affected = await self._move_emails_to_trash(ids_to_process, folder)
+            affected = await self._move_emails_to_trash(folder, email_ids=ids_list, gmail_msgids=gmail_list)
 
         if not affected:
-            raise EmailDeletionError(
-                f"None of the {len(ids_to_process)} requested IDs exist in '{folder}'. "
-                "IMAP UIDs are folder-scoped and change when a message moves; re-search "
-                f"'{folder}' to get its current UIDs before deleting."
-            )
-        return MailboxOperationResult.from_request(ids_to_process, affected)
+            raise EmailDeletionError(self._not_found_message(requested, gmail_list is not None, folder, "deleting"))
+        return MailboxOperationResult.from_request(requested, affected)
 
-    async def _permanent_delete_emails(self, email_ids: List[str], folder: str) -> List[str]:
-        """Permanently delete emails that exist in the folder; return the UIDs acted upon."""
+    @staticmethod
+    def _normalize_target_identifiers(
+        email_ids: Union[str, List[str], None],
+        gmail_msgids: Union[str, List[str], None],
+        *,
+        action: str,
+    ) -> tuple[list[str] | None, list[str] | None, list[str]]:
+        """Validate and normalize the requested identifiers to exactly one kind.
+
+        Returns (uid_list_or_None, gmail_list_or_None, requested_identifiers).
+        """
+        ids_list = [email_ids] if isinstance(email_ids, str) else (list(email_ids) if email_ids else None)
+        gmail_list = [gmail_msgids] if isinstance(gmail_msgids, str) else (list(gmail_msgids) if gmail_msgids else None)
+        if ids_list and gmail_list:
+            raise EmailDeletionError("Provide either email_ids or gmail_msgids, not both")
+        if not ids_list and not gmail_list:
+            raise EmailDeletionError(f"No email_ids or gmail_msgids provided for {action}")
+        if gmail_list:
+            EmailClient._validate_gmail_msgids(gmail_list)
+            return None, gmail_list, gmail_list
+        assert ids_list is not None
+        EmailClient._validate_email_ids(ids_list)
+        return ids_list, None, ids_list
+
+    @staticmethod
+    def _not_found_message(requested: list[str], by_gmail: bool, folder: str, verb: str) -> str:
+        if by_gmail:
+            return (
+                f"None of the {len(requested)} requested gmail_msgids were found in '{folder}'. "
+                f"The messages may be in a different folder."
+            )
+        return (
+            f"None of the {len(requested)} requested UIDs exist in '{folder}'. "
+            "IMAP UIDs are folder-scoped and change when a message moves; re-search "
+            f"'{folder}' to get its current UIDs before {verb}."
+        )
+
+    async def _permanent_delete_emails(
+        self,
+        folder: str,
+        *,
+        email_ids: list[str] | None = None,
+        gmail_msgids: list[str] | None = None,
+    ) -> List[str]:
+        """Permanently delete matching messages; return the identifiers acted upon."""
         mail = None
         try:
             mail = await self.connect_imap()
@@ -1500,25 +1621,32 @@ class EmailClient:
                 raise EmailDeletionError(
                     "UIDPLUS is required for targeted permanent deletion; refusing mailbox-wide EXPUNGE"
                 )
-            existing = await self._filter_existing_uids(mail, email_ids)
+            target_uids, uid_to_ident = await self._resolve_action_targets(mail, email_ids, gmail_msgids)
+            existing = await self._filter_existing_uids(mail, target_uids)
             if not existing:
                 return []
-            logging.info("Permanently deleting %s of %s requested emails by UID", len(existing), len(email_ids))
+            logging.info("Permanently deleting %s of %s requested emails by UID", len(existing), len(target_uids))
             message_set = ",".join(existing)
             await self._uid_command(mail, "STORE", message_set, "+FLAGS.SILENT", "(\\Deleted)")
             await self._uid_command(mail, "EXPUNGE", message_set)
             logging.info("Successfully permanently deleted %s emails", len(existing))
-            return existing
+            return [uid_to_ident[uid] for uid in existing]
 
         except Exception as e:
             logging.error("Permanent delete failed with %s", type(e).__name__)
-            raise EmailDeletionError(f"Failed to permanently delete emails {email_ids}: {e!s}") from e
+            raise EmailDeletionError(f"Failed to permanently delete emails: {e!s}") from e
         finally:
             if mail:
                 await self.close_imap_connection(mail)
 
-    async def _move_emails_to_trash(self, email_ids: List[str], folder: str) -> List[str]:
-        """Move emails that exist in the folder to trash; return the UIDs acted upon."""
+    async def _move_emails_to_trash(
+        self,
+        folder: str,
+        *,
+        email_ids: list[str] | None = None,
+        gmail_msgids: list[str] | None = None,
+    ) -> List[str]:
+        """Move matching messages to trash; return the identifiers acted upon."""
         mail = None
         try:
             mail = await self.connect_imap()
@@ -1527,14 +1655,15 @@ class EmailClient:
             # Determine trash folder name
             trash_folder = await self._get_trash_folder_name(mail)
 
-            logging.info("Moving up to %s emails to trash by UID", len(email_ids))
-            affected = await self._move_uids(mail, email_ids, trash_folder)
-            logging.info("Successfully moved %s of %s requested emails to trash", len(affected), len(email_ids))
-            return affected
+            target_uids, uid_to_ident = await self._resolve_action_targets(mail, email_ids, gmail_msgids)
+            logging.info("Moving up to %s emails to trash by UID", len(target_uids))
+            affected = await self._move_uids(mail, target_uids, trash_folder)
+            logging.info("Successfully moved %s of %s requested emails to trash", len(affected), len(target_uids))
+            return [uid_to_ident[uid] for uid in affected]
 
         except Exception as e:
             logging.error("Move to trash failed with %s", type(e).__name__)
-            raise EmailDeletionError(f"Failed to move emails {email_ids} to trash: {e!s}") from e
+            raise EmailDeletionError(f"Failed to move emails to trash: {e!s}") from e
         finally:
             if mail:
                 await self.close_imap_connection(mail)
@@ -1684,22 +1813,33 @@ class EmailClient:
                 await self.close_imap_connection(mail)
 
     async def move_email(
-        self, email_ids: Union[str, List[str]], source_folder: str, destination_folder: str
+        self,
+        email_ids: Union[str, List[str], None] = None,
+        source_folder: str = "inbox",
+        destination_folder: str = "",
+        *,
+        gmail_msgids: Union[str, List[str], None] = None,
     ) -> "MailboxOperationResult":
         """Move one or more emails from one folder to another.
 
+        Target messages either by folder-scoped IMAP UID (``email_ids``) or by stable
+        Gmail message id (``gmail_msgids``, X-GM-MSGID), which survives folder moves.
+        Provide exactly one.
+
         Args:
-            email_ids: The ID(s) of the email(s) to move. Can be a single string or list of strings.
-            source_folder: The folder containing the email(s) (e.g., 'inbox', 'INBOX')
-            destination_folder: The destination folder (e.g., 'Archive', '[Gmail]/Important')
+            email_ids: IMAP UID(s) to move (string or list).
+            source_folder: The folder containing the email(s) (e.g., 'inbox', 'INBOX').
+            destination_folder: The destination folder (e.g., 'Archive', '[Gmail]/Important').
+            gmail_msgids: Stable Gmail message id(s), resolved to the current UID in
+                ``source_folder`` server-side.
 
         Returns:
-            MailboxOperationResult describing which UIDs were moved and which were not
-            found in source_folder.
+            MailboxOperationResult (in the identifier space you supplied) describing which
+            messages were moved and which were not found in source_folder.
 
         Raises:
-            EmailDeletionError: If the move fails, or if none of the requested UIDs
-                exist in source_folder (IMAP UIDs are folder-scoped).
+            EmailDeletionError: If the move fails, or if none of the requested messages
+                were found in source_folder.
             EmailConnectionError: If IMAP connection fails
         """
         # Validate that source and destination are different
@@ -1708,25 +1848,26 @@ class EmailClient:
                 f"Source and destination folders are the same: '{source_folder}'. No move operation needed."
             )
 
-        # Convert single email ID to list for uniform processing
-        ids_to_process = [email_ids] if isinstance(email_ids, str) else email_ids
+        ids_list, gmail_list, requested = self._normalize_target_identifiers(email_ids, gmail_msgids, action="moving")
 
-        if not ids_to_process:
-            raise EmailDeletionError("No email IDs provided for moving")
-        self._validate_email_ids(ids_to_process)
-
-        affected = await self._move_emails_batch(ids_to_process, source_folder, destination_folder)
-        result = MailboxOperationResult.from_request(ids_to_process, affected)
+        affected = await self._move_emails_batch(
+            source_folder, destination_folder, email_ids=ids_list, gmail_msgids=gmail_list
+        )
         if not affected:
             raise EmailDeletionError(
-                f"None of the {len(ids_to_process)} requested IDs exist in '{source_folder}'. "
-                "IMAP UIDs are folder-scoped and change when a message moves; re-search "
-                f"'{source_folder}' to get its current UIDs before moving."
+                self._not_found_message(requested, gmail_list is not None, source_folder, "moving")
             )
-        return result
+        return MailboxOperationResult.from_request(requested, affected)
 
-    async def _move_emails_batch(self, email_ids: List[str], source_folder: str, destination_folder: str) -> List[str]:
-        """Move emails that exist in the source folder; return the UIDs actually moved."""
+    async def _move_emails_batch(
+        self,
+        source_folder: str,
+        destination_folder: str,
+        *,
+        email_ids: list[str] | None = None,
+        gmail_msgids: list[str] | None = None,
+    ) -> List[str]:
+        """Move matching messages out of the source folder; return the identifiers moved."""
         mail = None
         try:
             mail = await self.connect_imap()
@@ -1740,20 +1881,21 @@ class EmailClient:
             # Ensure destination folder is properly quoted
             quoted_dest = quote_imap_mailbox(destination_folder)
 
+            target_uids, uid_to_ident = await self._resolve_action_targets(mail, email_ids, gmail_msgids)
             logging.info(
                 "Moving up to %s emails from '%s' to '%s' by UID",
-                len(email_ids),
+                len(target_uids),
                 source_folder,
                 destination_folder,
             )
-            affected = await self._move_uids(mail, email_ids, quoted_dest)
-            logging.info("Successfully moved %s of %s requested emails", len(affected), len(email_ids))
-            return affected
+            affected = await self._move_uids(mail, target_uids, quoted_dest)
+            logging.info("Successfully moved %s of %s requested emails", len(affected), len(target_uids))
+            return [uid_to_ident[uid] for uid in affected]
 
         except Exception as e:
             logging.error("Email move failed with %s", type(e).__name__)
             raise EmailDeletionError(
-                f"Failed to move emails {email_ids} from '{source_folder}' to '{destination_folder}': {e!s}"
+                f"Failed to move emails from '{source_folder}' to '{destination_folder}': {e!s}"
             ) from e
         finally:
             if mail:
@@ -2162,6 +2304,119 @@ class EmailClient:
         """Count emails matching search criteria."""
         messages = await self._uid_command(mail, "SEARCH", None, search_criteria)
         return len(messages[0].split()) if messages and messages[0] else 0
+
+    async def count_emails(self, criteria: SearchCriteria) -> int:
+        """Count emails matching a filter without fetching rows or creating a collection."""
+        mail = None
+        try:
+            mail = await self.connect_imap()
+            await self._select_folder(mail, criteria.folder)
+            search_criteria = await self._build_search_criteria(criteria)
+            return await self._count_emails(mail, search_criteria)
+        except Exception as e:
+            logging.error("Email count failed with %s", type(e).__name__)
+            raise EmailSearchError(f"Failed to count emails: {e!s}") from e
+        finally:
+            if mail:
+                await self.close_imap_connection(mail)
+
+    async def aggregate_emails(
+        self, criteria: SearchCriteria, group_by: str, top_n: int = 20, batch_size: int = 500
+    ) -> Dict[str, Any]:
+        """Group matching emails server-side and return a small top-N frequency table.
+
+        Fetches only the header/metadata needed for the grouping key (never bodies),
+        aggregates in-process, and returns counts -- no collection is created and no
+        per-row data crosses into context. This replaces paging thousands of rows to
+        count them client-side.
+
+        Args:
+            criteria: Search filter (folder, dates, sender/subject/body substrings).
+            group_by: One of 'sender', 'recipient', 'date'.
+            top_n: Number of most-frequent groups to return.
+            batch_size: UIDs fetched per IMAP round-trip.
+
+        Returns:
+            {group_by, folder, total_matched, total_grouped, distinct_keys, top_n,
+             groups: [{key, count}, ...], truncated}
+        """
+        if group_by not in AGGREGATE_GROUPINGS:
+            allowed = ", ".join(sorted(AGGREGATE_GROUPINGS))
+            raise EmailSearchError(f"Unsupported group_by '{group_by}'. Supported: {allowed}")
+        if not isinstance(top_n, int) or isinstance(top_n, bool) or top_n <= 0:
+            raise ValueError("top_n must be a positive integer")
+
+        mail = None
+        try:
+            mail = await self.connect_imap()
+            await self._select_folder(mail, criteria.folder)
+            search_criteria = await self._build_search_criteria(criteria)
+            messages = await self._uid_command(mail, "SEARCH", None, search_criteria)
+            uids = messages[0].split() if messages and messages[0] else []
+            total_matched = len(uids)
+
+            counts: Counter[str] = Counter()
+            for start in range(0, len(uids), batch_size):
+                batch = uids[start : start + batch_size]
+                counts.update(await self._fetch_group_keys(mail, batch, group_by))
+
+            total_grouped = sum(counts.values())
+            top = counts.most_common(top_n)
+            return {
+                "group_by": group_by,
+                "folder": criteria.folder,
+                "total_matched": total_matched,
+                "total_grouped": total_grouped,
+                "distinct_keys": len(counts),
+                "top_n": top_n,
+                "groups": [{"key": key, "count": count} for key, count in top],
+                "truncated": len(counts) > top_n,
+            }
+        except (EmailSearchError, ValueError):
+            raise
+        except Exception as e:
+            logging.error("Email aggregation failed with %s", type(e).__name__)
+            raise EmailSearchError(f"Failed to aggregate emails: {e!s}") from e
+        finally:
+            if mail:
+                await self.close_imap_connection(mail)
+
+    async def _fetch_group_keys(self, mail: imaplib.IMAP4_SSL, uid_batch: List[bytes], group_by: str) -> List[str]:
+        """Fetch and extract the grouping key for one batch of UIDs."""
+        if not uid_batch:
+            return []
+        message_set = b",".join(uid_batch).decode()
+        if group_by == "date":
+            data = await self._uid_command(mail, "FETCH", message_set, "(UID INTERNALDATE)")
+            return [key for key in (self._internaldate_to_day(item) for item in data) if key]
+
+        header_field = "FROM" if group_by == "sender" else "TO"
+        data = await self._uid_command(mail, "FETCH", message_set, f"(UID BODY.PEEK[HEADER.FIELDS ({header_field})])")
+        keys: List[str] = []
+        for item in data:
+            if not (isinstance(item, tuple) and len(item) >= 2 and isinstance(item[1], (bytes, bytearray))):
+                continue
+            header_message = email.message_from_bytes(bytes(item[1]))
+            raw = decode_email_header(header_message.get(header_field.title()), "").strip()
+            if not raw:
+                continue
+            address = parseaddr(raw)[1].lower()
+            keys.append(address or raw)
+        return keys
+
+    @staticmethod
+    def _internaldate_to_day(item: object) -> str | None:
+        """Extract the YYYY-MM-DD day from an INTERNALDATE FETCH response item."""
+        raw = item if isinstance(item, (bytes, bytearray)) else (item[0] if isinstance(item, tuple) else None)
+        if not isinstance(raw, (bytes, bytearray)):
+            return None
+        match = re.search(rb'INTERNALDATE "(\d{2}-[A-Za-z]{3}-\d{4})', bytes(raw))
+        if not match:
+            return None
+        try:
+            return datetime.strptime(match.group(1).decode("ascii"), "%d-%b-%Y").strftime("%Y-%m-%d")
+        except ValueError:
+            return None
 
     def _format_email_summary(self, msg_data: Tuple[Any, ...]) -> Dict[str, Any]:
         """Format an email message into a summary dict with basic information."""

@@ -74,8 +74,8 @@ async def test_enabled_side_effect_tools_delegate(fake_client: MagicMock) -> Non
     await server.move_emails(["10"], "Archive")
     await server.delete_emails(["11"], permanent=True)
     fake_client.send_email.assert_awaited_once()
-    fake_client.move_email.assert_awaited_once_with(["10"], "inbox", "Archive")
-    fake_client.delete_email.assert_awaited_once_with(["11"], "inbox", True)
+    fake_client.move_email.assert_awaited_once_with(["10"], "inbox", "Archive", gmail_msgids=None)
+    fake_client.delete_email.assert_awaited_once_with(["11"], "inbox", True, gmail_msgids=None)
 
 
 @pytest.mark.asyncio
