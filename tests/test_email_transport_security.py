@@ -86,15 +86,30 @@ async def test_implicit_tls_uses_smtp_ssl() -> None:
     smtp.starttls.assert_not_called()
 
 
+def _uid_search_returns(found: bytes):
+    """Mock IMAP.uid: answer UID SEARCH with `found`, everything else with OK/empty."""
+
+    def side_effect(command: str, *_args: object):
+        if command == "SEARCH":
+            return ("OK", [found])
+        return ("OK", [b""])
+
+    return side_effect
+
+
 @pytest.mark.asyncio
 async def test_move_prefers_uid_move() -> None:
     client = EmailClient(_config())
     mail = MagicMock(capabilities=(b"IMAP4REV1",))
     mail.capability.return_value = ("OK", [b"IMAP4REV1 UIDPLUS MOVE"])
-    mail.uid.return_value = ("OK", [b""])
-    await client._move_uids(mail, ["10", "11"], '"Archive"')
+    mail.uid.side_effect = _uid_search_returns(b"10 11")
+    affected = await client._move_uids(mail, ["10", "11"], '"Archive"')
+    assert affected == ["10", "11"]
     mail.capability.assert_called_once_with()
-    mail.uid.assert_called_once_with("MOVE", "10,11", '"Archive"')
+    commands = [call.args[0] for call in mail.uid.call_args_list]
+    assert commands == ["SEARCH", "MOVE"]
+    assert mail.uid.call_args_list[0].args == ("SEARCH", None, "UID 10,11")
+    assert mail.uid.call_args_list[1].args == ("MOVE", "10,11", '"Archive"')
     mail.expunge.assert_not_called()
 
 
@@ -103,9 +118,10 @@ async def test_uidplus_fallback_uses_targeted_uid_expunge() -> None:
     client = EmailClient(_config())
     mail = MagicMock(capabilities=(b"IMAP4REV1",))
     mail.capability.return_value = ("OK", [b"IMAP4REV1 UIDPLUS"])
-    mail.uid.return_value = ("OK", [b""])
-    await client._move_uids(mail, ["10"], '"Archive"')
-    assert [call.args[0] for call in mail.uid.call_args_list] == ["COPY", "STORE", "EXPUNGE"]
+    mail.uid.side_effect = _uid_search_returns(b"10")
+    affected = await client._move_uids(mail, ["10"], '"Archive"')
+    assert affected == ["10"]
+    assert [call.args[0] for call in mail.uid.call_args_list] == ["SEARCH", "COPY", "STORE", "EXPUNGE"]
     assert mail.uid.call_args_list[-1].args == ("EXPUNGE", "10")
     mail.expunge.assert_not_called()
 
@@ -115,8 +131,34 @@ async def test_move_refuses_mailbox_wide_expunge() -> None:
     client = EmailClient(_config())
     mail = MagicMock(capabilities=(b"IMAP4REV1",))
     mail.capability.return_value = ("OK", [b"IMAP4REV1"])
+    mail.uid.side_effect = _uid_search_returns(b"10")
     with pytest.raises(EmailDeletionError, match="refusing"):
         await client._move_uids(mail, ["10"], '"Archive"')
+
+
+@pytest.mark.asyncio
+async def test_move_skips_uids_absent_from_source_folder() -> None:
+    client = EmailClient(_config())
+    mail = MagicMock(capabilities=(b"IMAP4REV1",))
+    mail.capability.return_value = ("OK", [b"IMAP4REV1 UIDPLUS MOVE"])
+    # Only UID 10 exists in the folder; 11 and 12 are stale (folder-scoped UIDs).
+    mail.uid.side_effect = _uid_search_returns(b"10")
+    affected = await client._move_uids(mail, ["10", "11", "12"], '"Archive"')
+    assert affected == ["10"]
+    move_calls = [call for call in mail.uid.call_args_list if call.args[0] == "MOVE"]
+    assert move_calls[0].args == ("MOVE", "10", '"Archive"')
+
+
+@pytest.mark.asyncio
+async def test_move_uids_no_match_is_a_noop() -> None:
+    client = EmailClient(_config())
+    mail = MagicMock(capabilities=(b"IMAP4REV1",))
+    mail.capability.return_value = ("OK", [b"IMAP4REV1 UIDPLUS MOVE"])
+    mail.uid.side_effect = _uid_search_returns(b"")  # nothing matches
+    affected = await client._move_uids(mail, ["10", "11"], '"Archive"')
+    assert affected == []
+    commands = [call.args[0] for call in mail.uid.call_args_list]
+    assert commands == ["SEARCH"]  # no MOVE/COPY/STORE/EXPUNGE issued
 
 
 @pytest.mark.asyncio

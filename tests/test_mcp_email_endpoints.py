@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from email_client.email_client import PaginationInfo
+from email_client.email_client import MailboxOperationResult, PaginationInfo
 from email_client.server import EmailMCPServer
 
 
@@ -24,8 +24,8 @@ def fake_client() -> MagicMock:
     client.list_folders = AsyncMock(return_value=[{"name": "Archive", "display_name": "Archive", "attributes": ""}])
     client.count_daily_emails = AsyncMock(return_value={"2024-01-01": 1})
     client.send_email = AsyncMock()
-    client.move_email = AsyncMock()
-    client.delete_email = AsyncMock()
+    client.move_email = AsyncMock(return_value=MailboxOperationResult.from_request(["10"], ["10"]))
+    client.delete_email = AsyncMock(return_value=MailboxOperationResult.from_request(["11"], ["11"]))
     return client
 
 
@@ -76,3 +76,23 @@ async def test_enabled_side_effect_tools_delegate(fake_client: MagicMock) -> Non
     fake_client.send_email.assert_awaited_once()
     fake_client.move_email.assert_awaited_once_with(["10"], "inbox", "Archive")
     fake_client.delete_email.assert_awaited_once_with(["11"], "inbox", True)
+
+
+@pytest.mark.asyncio
+async def test_move_reports_partial_result_not_the_request(fake_client: MagicMock) -> None:
+    # Requested 3, but only "10" existed in the source folder.
+    fake_client.move_email = AsyncMock(return_value=MailboxOperationResult.from_request(["10", "11", "12"], ["10"]))
+    server = EmailMCPServer(enable_write_operations=True, email_client=fake_client)
+    message = await server.move_emails(["10", "11", "12"], "Archive", source_folder="[Gmail]/Bin")
+    assert "Moved 1 email from '[Gmail]/Bin'" in message
+    assert "Moved IDs: 10" in message
+    assert "Not moved (2 not found in '[Gmail]/Bin'): 11, 12" in message
+
+
+@pytest.mark.asyncio
+async def test_delete_reports_partial_result(fake_client: MagicMock) -> None:
+    fake_client.delete_email = AsyncMock(return_value=MailboxOperationResult.from_request(["1", "2"], ["1"]))
+    server = EmailMCPServer(enable_write_operations=True, email_client=fake_client)
+    message = await server.delete_emails(["1", "2"], permanent=False)
+    assert "Moved 1 email to trash" in message
+    assert "Not deleted (1 not found in 'inbox'): 2" in message

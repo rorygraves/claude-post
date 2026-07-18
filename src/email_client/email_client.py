@@ -539,6 +539,34 @@ class PaginationInfo:
         }
 
 
+@dataclass(frozen=True)
+class MailboxOperationResult:
+    """Outcome of a move/delete operation, reported from the server's actual result.
+
+    IMAP UIDs are folder-scoped, so a requested UID may not exist in the folder being
+    acted upon. This separates the UIDs actually affected from those not found, so a
+    caller never mistakes a silent no-op for success.
+    """
+
+    requested: List[str]
+    affected: List[str]
+    not_found: List[str]
+
+    @classmethod
+    def from_request(cls, requested: List[str], affected: List[str]) -> "MailboxOperationResult":
+        affected_set = set(affected)
+        not_found = [uid for uid in requested if uid not in affected_set]
+        return cls(requested=list(requested), affected=list(affected), not_found=not_found)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "requested_count": len(self.requested),
+            "affected_count": len(self.affected),
+            "affected": self.affected,
+            "not_found": self.not_found,
+        }
+
+
 @dataclass
 class EmailMessage:
     """Encapsulates and validates email message data before sending.
@@ -850,18 +878,49 @@ class EmailClient:
             raise EmailSearchError(f"UID {command} returned an invalid response")
         return data
 
+    async def _filter_existing_uids(self, mail: imaplib.IMAP4_SSL, email_ids: list[str]) -> list[str]:
+        """Return the subset of email_ids that actually exist in the selected folder.
+
+        IMAP UIDs are folder-scoped, so a UID valid in one folder may match nothing
+        in another. Resolving the request against a UID SEARCH lets callers act only
+        on real messages and report the rest as not-found, instead of silently
+        no-opping while reporting success.
+        """
+        message_set = ",".join(email_ids)
+        data = await self._uid_command(mail, "SEARCH", None, f"UID {message_set}")
+        found: set[str] = set()
+        for part in data:
+            if not part:
+                continue
+            text = part.decode() if isinstance(part, (bytes, bytearray)) else str(part)
+            found.update(text.split())
+        # Preserve the caller's order and drop duplicates.
+        seen: set[str] = set()
+        existing: list[str] = []
+        for uid in email_ids:
+            if uid in found and uid not in seen:
+                seen.add(uid)
+                existing.append(uid)
+        return existing
+
     async def _move_uids(
         self,
         mail: imaplib.IMAP4_SSL,
         email_ids: list[str],
         destination_folder: str,
-    ) -> None:
-        """Move UIDs without ever issuing a mailbox-wide EXPUNGE."""
-        message_set = ",".join(email_ids)
+    ) -> list[str]:
+        """Move only the UIDs that exist in the selected folder, without a mailbox-wide EXPUNGE.
+
+        Returns the UIDs actually acted upon (those present in the source folder).
+        """
+        existing = await self._filter_existing_uids(mail, email_ids)
+        if not existing:
+            return []
+        message_set = ",".join(existing)
         capabilities = await self._get_capability_set(mail)
         if "MOVE" in capabilities:
             await self._uid_command(mail, "MOVE", message_set, destination_folder)
-            return
+            return existing
         if "UIDPLUS" not in capabilities:
             raise EmailDeletionError(
                 "The IMAP server supports neither MOVE nor UIDPLUS; refusing an unsafe mailbox-wide expunge"
@@ -869,6 +928,7 @@ class EmailClient:
         await self._uid_command(mail, "COPY", message_set, destination_folder)
         await self._uid_command(mail, "STORE", message_set, "+FLAGS.SILENT", "(\\Deleted)")
         await self._uid_command(mail, "EXPUNGE", message_set)
+        return existing
 
     async def query_server_capabilities(self) -> None:
         """Query and log IMAP server capabilities for debugging and feature discovery."""
@@ -1389,7 +1449,7 @@ class EmailClient:
 
     async def delete_email(
         self, email_ids: Union[str, List[str]], folder: str = "inbox", permanent: bool = False
-    ) -> None:
+    ) -> "MailboxOperationResult":
         """Delete one or more emails by moving to trash or permanently deleting.
 
         Args:
@@ -1398,8 +1458,13 @@ class EmailClient:
             permanent: If True, permanently delete (mark + expunge).
                       If False (default), move to trash folder.
 
+        Returns:
+            MailboxOperationResult describing which UIDs were deleted and which were not
+            found in the folder.
+
         Raises:
-            EmailDeletionError: If the deletion operation fails
+            EmailDeletionError: If the deletion fails, or if none of the requested UIDs
+                exist in the folder (IMAP UIDs are folder-scoped).
             EmailConnectionError: If IMAP connection fails
         """
         # Convert single email ID to list for uniform processing
@@ -1411,12 +1476,20 @@ class EmailClient:
 
         # Process all emails in a single connection
         if permanent:
-            await self._permanent_delete_emails(ids_to_process, folder)
+            affected = await self._permanent_delete_emails(ids_to_process, folder)
         else:
-            await self._move_emails_to_trash(ids_to_process, folder)
+            affected = await self._move_emails_to_trash(ids_to_process, folder)
 
-    async def _permanent_delete_emails(self, email_ids: List[str], folder: str) -> None:
-        """Permanently delete multiple emails by marking as deleted and expunging."""
+        if not affected:
+            raise EmailDeletionError(
+                f"None of the {len(ids_to_process)} requested IDs exist in '{folder}'. "
+                "IMAP UIDs are folder-scoped and change when a message moves; re-search "
+                f"'{folder}' to get its current UIDs before deleting."
+            )
+        return MailboxOperationResult.from_request(ids_to_process, affected)
+
+    async def _permanent_delete_emails(self, email_ids: List[str], folder: str) -> List[str]:
+        """Permanently delete emails that exist in the folder; return the UIDs acted upon."""
         mail = None
         try:
             mail = await self.connect_imap()
@@ -1427,11 +1500,15 @@ class EmailClient:
                 raise EmailDeletionError(
                     "UIDPLUS is required for targeted permanent deletion; refusing mailbox-wide EXPUNGE"
                 )
-            logging.info("Permanently deleting %s emails by UID", len(email_ids))
-            message_set = ",".join(email_ids)
+            existing = await self._filter_existing_uids(mail, email_ids)
+            if not existing:
+                return []
+            logging.info("Permanently deleting %s of %s requested emails by UID", len(existing), len(email_ids))
+            message_set = ",".join(existing)
             await self._uid_command(mail, "STORE", message_set, "+FLAGS.SILENT", "(\\Deleted)")
             await self._uid_command(mail, "EXPUNGE", message_set)
-            logging.info("Successfully permanently deleted %s emails", len(email_ids))
+            logging.info("Successfully permanently deleted %s emails", len(existing))
+            return existing
 
         except Exception as e:
             logging.error("Permanent delete failed with %s", type(e).__name__)
@@ -1440,8 +1517,8 @@ class EmailClient:
             if mail:
                 await self.close_imap_connection(mail)
 
-    async def _move_emails_to_trash(self, email_ids: List[str], folder: str) -> None:
-        """Move multiple emails to the trash folder."""
+    async def _move_emails_to_trash(self, email_ids: List[str], folder: str) -> List[str]:
+        """Move emails that exist in the folder to trash; return the UIDs acted upon."""
         mail = None
         try:
             mail = await self.connect_imap()
@@ -1450,9 +1527,10 @@ class EmailClient:
             # Determine trash folder name
             trash_folder = await self._get_trash_folder_name(mail)
 
-            logging.info("Moving %s emails to trash by UID", len(email_ids))
-            await self._move_uids(mail, email_ids, trash_folder)
-            logging.info("Successfully moved %s emails to trash", len(email_ids))
+            logging.info("Moving up to %s emails to trash by UID", len(email_ids))
+            affected = await self._move_uids(mail, email_ids, trash_folder)
+            logging.info("Successfully moved %s of %s requested emails to trash", len(affected), len(email_ids))
+            return affected
 
         except Exception as e:
             logging.error("Move to trash failed with %s", type(e).__name__)
@@ -1605,7 +1683,9 @@ class EmailClient:
             if mail:
                 await self.close_imap_connection(mail)
 
-    async def move_email(self, email_ids: Union[str, List[str]], source_folder: str, destination_folder: str) -> None:
+    async def move_email(
+        self, email_ids: Union[str, List[str]], source_folder: str, destination_folder: str
+    ) -> "MailboxOperationResult":
         """Move one or more emails from one folder to another.
 
         Args:
@@ -1613,8 +1693,13 @@ class EmailClient:
             source_folder: The folder containing the email(s) (e.g., 'inbox', 'INBOX')
             destination_folder: The destination folder (e.g., 'Archive', '[Gmail]/Important')
 
+        Returns:
+            MailboxOperationResult describing which UIDs were moved and which were not
+            found in source_folder.
+
         Raises:
-            EmailDeletionError: If the move operation fails (reusing existing exception)
+            EmailDeletionError: If the move fails, or if none of the requested UIDs
+                exist in source_folder (IMAP UIDs are folder-scoped).
             EmailConnectionError: If IMAP connection fails
         """
         # Validate that source and destination are different
@@ -1630,10 +1715,18 @@ class EmailClient:
             raise EmailDeletionError("No email IDs provided for moving")
         self._validate_email_ids(ids_to_process)
 
-        await self._move_emails_batch(ids_to_process, source_folder, destination_folder)
+        affected = await self._move_emails_batch(ids_to_process, source_folder, destination_folder)
+        result = MailboxOperationResult.from_request(ids_to_process, affected)
+        if not affected:
+            raise EmailDeletionError(
+                f"None of the {len(ids_to_process)} requested IDs exist in '{source_folder}'. "
+                "IMAP UIDs are folder-scoped and change when a message moves; re-search "
+                f"'{source_folder}' to get its current UIDs before moving."
+            )
+        return result
 
-    async def _move_emails_batch(self, email_ids: List[str], source_folder: str, destination_folder: str) -> None:
-        """Move multiple emails in a single IMAP connection."""
+    async def _move_emails_batch(self, email_ids: List[str], source_folder: str, destination_folder: str) -> List[str]:
+        """Move emails that exist in the source folder; return the UIDs actually moved."""
         mail = None
         try:
             mail = await self.connect_imap()
@@ -1648,13 +1741,14 @@ class EmailClient:
             quoted_dest = quote_imap_mailbox(destination_folder)
 
             logging.info(
-                "Moving %s emails from '%s' to '%s' by UID",
+                "Moving up to %s emails from '%s' to '%s' by UID",
                 len(email_ids),
                 source_folder,
                 destination_folder,
             )
-            await self._move_uids(mail, email_ids, quoted_dest)
-            logging.info("Successfully moved %s emails", len(email_ids))
+            affected = await self._move_uids(mail, email_ids, quoted_dest)
+            logging.info("Successfully moved %s of %s requested emails", len(affected), len(email_ids))
+            return affected
 
         except Exception as e:
             logging.error("Email move failed with %s", type(e).__name__)

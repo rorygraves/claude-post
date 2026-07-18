@@ -563,17 +563,22 @@ class EmailMCPServer(BaseMCPServer):
             account: Account alias the emails belong to (optional). Defaults to the primary account.
 
         Returns:
-            Success message with details
+            Message reporting how many emails were actually moved, plus any IDs that
+            were not found in the source folder.
         """
-        await self._client_for(account).move_email(email_ids, source_folder, destination_folder)
+        result = await self._client_for(account).move_email(email_ids, source_folder, destination_folder)
 
-        count = len(email_ids)
-        email_word = "email" if count == 1 else "emails"
-
-        return (
-            f"Successfully moved {count} {email_word} from '{source_folder}' to '{destination_folder}'.\n"
-            f"Moved IDs: {', '.join(email_ids)}"
-        )
+        moved = len(result.affected)
+        email_word = "email" if moved == 1 else "emails"
+        lines = [
+            f"Moved {moved} {email_word} from '{source_folder}' to '{destination_folder}'.",
+            f"Moved IDs: {', '.join(result.affected)}",
+        ]
+        if result.not_found:
+            lines.append(
+                f"Not moved ({len(result.not_found)} not found in '{source_folder}'): " f"{', '.join(result.not_found)}"
+            )
+        return "\n".join(lines)
 
     @mcp_tool(name="delete", capability="mailbox_write")
     async def delete_emails(
@@ -592,25 +597,31 @@ class EmailMCPServer(BaseMCPServer):
             account: Account alias the emails belong to (optional). Defaults to the primary account.
 
         Returns:
-            Success message with details
+            Message reporting how many emails were actually deleted, plus any IDs that
+            were not found in the folder.
         """
-        await self._client_for(account).delete_email(email_ids, folder, permanent)
+        result = await self._client_for(account).delete_email(email_ids, folder, permanent)
 
-        count = len(email_ids)
-        email_word = "email" if count == 1 else "emails"
+        affected = len(result.affected)
+        email_word = "email" if affected == 1 else "emails"
 
         if permanent:
-            return (
-                f"Successfully permanently deleted {count} {email_word} from '{folder}'.\n"
-                f"This action cannot be undone.\n"
-                f"Deleted IDs: {', '.join(email_ids)}"
-            )
+            lines = [
+                f"Permanently deleted {affected} {email_word} from '{folder}'.",
+                "This action cannot be undone.",
+                f"Deleted IDs: {', '.join(result.affected)}",
+            ]
         else:
-            return (
-                f"Successfully moved {count} {email_word} to trash from '{folder}'.\n"
-                f"The {email_word} can be restored from the trash folder if needed.\n"
-                f"Moved IDs: {', '.join(email_ids)}"
+            lines = [
+                f"Moved {affected} {email_word} to trash from '{folder}'.",
+                f"The {email_word} can be restored from the trash folder if needed.",
+                f"Moved IDs: {', '.join(result.affected)}",
+            ]
+        if result.not_found:
+            lines.append(
+                f"Not deleted ({len(result.not_found)} not found in '{folder}'): {', '.join(result.not_found)}"
             )
+        return "\n".join(lines)
 
 
 def main() -> None:
