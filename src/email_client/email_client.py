@@ -5,6 +5,7 @@ operations including reading, searching, and sending emails.
 """
 
 import asyncio
+import base64
 import email
 import imaplib
 import logging
@@ -160,6 +161,146 @@ def quote_imap_mailbox(value: str) -> str:
     """Return a safely quoted IMAP mailbox argument."""
     unquoted = value.strip('"')
     return '"' + escape_imap_string(unquoted) + '"'
+
+
+def decode_imap_utf7(text: str) -> str:
+    """Decode an IMAP modified-UTF-7 mailbox name to Unicode (RFC 3501 5.1.3).
+
+    Gmail and other servers encode non-ASCII folder/label names in modified UTF-7:
+    printable ASCII passes through, ``&`` shifts into a base64 (with ``,`` for ``/``)
+    UTF-16-BE run terminated by ``-``, and ``&-`` is a literal ``&``. Names already
+    plain ASCII are returned unchanged. Malformed sequences are left verbatim rather
+    than raising, since a display name is best-effort.
+    """
+    if "&" not in text:
+        return text
+    result: list[str] = []
+    i = 0
+    length = len(text)
+    while i < length:
+        char = text[i]
+        if char != "&":
+            result.append(char)
+            i += 1
+            continue
+        end = text.find("-", i + 1)
+        if end == -1:
+            # Unterminated shift; treat the remainder as literal.
+            result.append(text[i:])
+            break
+        chunk = text[i + 1 : end]
+        if chunk == "":
+            result.append("&")  # "&-" encodes a literal ampersand
+        else:
+            b64 = chunk.replace(",", "/")
+            padding = "=" * (-len(b64) % 4)
+            try:
+                result.append(base64.b64decode(b64 + padding).decode("utf-16-be"))
+            except (ValueError, UnicodeDecodeError):
+                result.append(text[i : end + 1])  # leave malformed run as-is
+        i = end + 1
+    return "".join(result)
+
+
+def _decode_list_bytes(raw: bytes) -> str:
+    """Decode LIST-response bytes, tolerating non-UTF-8 octets."""
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return raw.decode("latin-1")
+
+
+def _tokenize_imap_astrings(text: str) -> List[str]:
+    """Tokenize the delimiter/mailbox portion of a LIST line into unescaped strings.
+
+    Each token is a quoted string (honouring ``\\"`` and ``\\\\`` escapes), the atom
+    ``NIL`` (returned as an empty string), or a bare atom read up to whitespace.
+    """
+    tokens: List[str] = []
+    i = 0
+    length = len(text)
+    while i < length:
+        char = text[i]
+        if char.isspace():
+            i += 1
+            continue
+        if char == '"':
+            i += 1
+            buf: list[str] = []
+            while i < length:
+                current = text[i]
+                if current == "\\" and i + 1 < length:
+                    buf.append(text[i + 1])
+                    i += 2
+                    continue
+                if current == '"':
+                    i += 1
+                    break
+                buf.append(current)
+                i += 1
+            tokens.append("".join(buf))
+        else:
+            start = i
+            while i < length and not text[i].isspace():
+                i += 1
+            atom = text[start:i]
+            tokens.append("" if atom == "NIL" else atom)
+    return tokens
+
+
+def parse_list_response_line(entry: object) -> Optional[Dict[str, str]]:
+    """Parse one imaplib LIST entry into ``{name, display_name, attributes}``.
+
+    Handles every mailbox-name encoding servers actually emit, which the previous
+    ``split('"')`` approach mangled or dropped:
+
+    - **quoted strings** with ``\\"``/``\\\\`` escapes (naive splitting truncated
+      names containing an escaped quote),
+    - **literals** (``{n}`` — imaplib yields a ``(prefix, name)`` tuple, previously
+      skipped entirely),
+    - **bare atoms** / ``NIL`` delimiters (no quotes, previously dropped).
+
+    ``name`` is the IMAP wire form (unescaped but still modified-UTF-7) so it round-trips
+    through :func:`quote_imap_mailbox` for use in commands; ``display_name`` is the
+    modified-UTF-7-decoded, ``[Gmail]/``-stripped human label. Returns ``None`` for
+    entries that are not parseable folder lines.
+    """
+    literal_name: Optional[str] = None
+    if isinstance(entry, tuple):
+        if len(entry) < 2 or not isinstance(entry[0], (bytes, bytearray)):
+            return None
+        line = _decode_list_bytes(bytes(entry[0]))
+        second = entry[1]
+        literal_name = _decode_list_bytes(bytes(second)) if isinstance(second, (bytes, bytearray)) else str(second)
+    elif isinstance(entry, (bytes, bytearray)):
+        line = _decode_list_bytes(bytes(entry))
+    else:
+        return None
+
+    attr_match = re.match(r"\s*\(([^)]*)\)\s*", line)
+    if not attr_match:
+        return None
+    attributes = attr_match.group(1).strip()
+    remainder = line[attr_match.end() :]
+
+    if literal_name is not None:
+        name = literal_name
+    else:
+        tokens = _tokenize_imap_astrings(remainder)
+        # Expected shape after the attribute list is: <delimiter> <mailbox>.
+        if len(tokens) < 2:
+            return None
+        name = tokens[1]
+
+    name = name.strip()
+    if not name:
+        return None
+
+    display_name = decode_imap_utf7(name)
+    if display_name.startswith("[Gmail]/"):
+        display_name = display_name[len("[Gmail]/") :]
+
+    return {"name": name, "display_name": display_name, "attributes": attributes}
 
 
 def normalize_email_date(date_str: str) -> str:
@@ -1715,16 +1856,15 @@ class EmailClient:
         status, folders = await _run_blocking(mail.list)
         if status != "OK" or not folders:
             return None
-        for folder in folders:
-            if not isinstance(folder, bytes) or attribute.lower() not in folder.lower():
+        wanted = attribute.decode("ascii", errors="ignore").lower()
+        for entry in folders:
+            folder_info = parse_list_response_line(entry)
+            if folder_info is None:
                 continue
-            try:
-                decoded = folder.decode("utf-8")
-            except UnicodeDecodeError:
-                continue
-            quoted_names: list[str] = re.findall(r'"((?:[^"\\]|\\.)*)"', decoded)
-            if quoted_names:
-                return quoted_names[-1].replace(r"\"", '"').replace(r"\\", "\\")
+            # SPECIAL-USE attributes are backslash-prefixed flags in the (...) list,
+            # e.g. "\Trash". Match case-insensitively against the parsed attributes.
+            if wanted in folder_info["attributes"].lower():
+                return folder_info["name"]
         return None
 
     async def _get_trash_folder_name(self, mail: imaplib.IMAP4_SSL) -> str:
@@ -1739,18 +1879,17 @@ class EmailClient:
             raise EmailDeletionError("Failed to list folders while locating trash")
         folder_names = []
         if folders:
-            for folder in folders:
-                if isinstance(folder, bytes) and (b"\\Trash" in folder or b"Bin" in folder):
-                    try:
-                        folder_name = folder.decode().split('"')[-2]
-                        folder_names.append(folder_name)
-                    except (UnicodeDecodeError, IndexError):
-                        continue
+            for entry in folders:
+                folder_info = parse_list_response_line(entry)
+                if folder_info is None:
+                    continue
+                if "\\Trash" in folder_info["attributes"] or "Bin" in folder_info["name"]:
+                    folder_names.append(folder_info["name"])
 
         # Use the first trash folder found, or default to Gmail Bin
         if folder_names:
             trash_folder = quote_imap_mailbox(folder_names[0])
-            logging.debug("Found SPECIAL-USE trash folder")
+            logging.debug("Found trash folder by name/attribute")
             return trash_folder
 
         # Default fallback
@@ -1781,25 +1920,9 @@ class EmailClient:
 
             folder_list = []
             if folders:
-                for folder_bytes in folders:
-                    if not isinstance(folder_bytes, bytes):
-                        continue
-                    try:
-                        folder_str = folder_bytes.decode("utf-8")
-                    except UnicodeDecodeError:
-                        continue
-                    # Parse IMAP LIST response: (attributes) "delimiter" "folder_name"
-                    parts = folder_str.split('"')
-                    if len(parts) >= 3:
-                        attributes = parts[0].strip("() ")
-                        folder_name = parts[-2]  # The quoted folder name
-
-                        # Create display name (remove Gmail prefixes for readability)
-                        display_name = folder_name
-                        if folder_name.startswith("[Gmail]/"):
-                            display_name = folder_name.replace("[Gmail]/", "")
-
-                        folder_info = {"name": folder_name, "display_name": display_name, "attributes": attributes}
+                for entry in folders:
+                    folder_info = parse_list_response_line(entry)
+                    if folder_info is not None:
                         folder_list.append(folder_info)
 
             # Sort folders for consistent ordering (inbox first, then alphabetical)
@@ -1925,22 +2048,16 @@ class EmailClient:
             if status != "OK":
                 raise EmailDeletionError("IMAP LIST failed")
 
-            # Check if folder exists (handle both quoted and unquoted names)
+            # Check if folder exists (compare unquoted names so a caller passing
+            # either "Foo" or Foo matches the server's listing).
+            wanted = folder_name.strip('"')
             folder_exists = False
             if folders:
-                for folder_bytes in folders:
-                    if not isinstance(folder_bytes, bytes):
-                        continue
-                    try:
-                        folder_str = folder_bytes.decode("utf-8")
-                    except UnicodeDecodeError:
-                        continue
-                    # Extract folder name from IMAP LIST response
-                    if '"' in folder_str:
-                        listed_folder = folder_str.split('"')[-2]
-                        if folder_name in (listed_folder, f'"{listed_folder}"'):
-                            folder_exists = True
-                            break
+                for entry in folders:
+                    folder_info = parse_list_response_line(entry)
+                    if folder_info is not None and folder_info["name"] == wanted:
+                        folder_exists = True
+                        break
 
             if not folder_exists:
                 raise EmailDeletionError(f"Destination folder '{folder_name}' does not exist")

@@ -55,10 +55,15 @@ message moves). Two consequences shape this roadmap:
 - ⏳ **#5 Collection TTL** — auto-expire idle collections in memory, on top of the
   LRU eviction + `mail-clear` / `mail-drop` already shipped. Better addressed by
   Tier 1 reducing collection creation than by more store machinery.
-- 🔎 **#8 Folder-listing escaping** — `mail-folders` reportedly returns garbled
-  duplicates (`[Gmail]\\AllMail`). The `folder_str.split('"')` parser is fragile
-  but looks correct for standard Gmail LIST output; **needs a raw-response repro**
-  before changing. Likely swap for a tested LIST parser.
+- ✅ **#8 Folder-listing escaping** — the `split('"')` parser was correct for
+  standard Gmail output but garbled or silently dropped four non-standard response
+  shapes: names with escaped `\"`/`\\` (truncated), literal (`{n}`) names imaplib
+  returns as tuples (dropped), unquoted-atom / `NIL`-delimiter names (dropped), and
+  non-ASCII modified-UTF-7 labels (shown as mojibake — the likely source of the
+  reported garble). Replaced all four `split('"')` sites with one tested
+  `parse_list_response_line` that handles quoted/literal/atom names, unescapes IMAP
+  escapes, and decodes modified UTF-7 for display while keeping the wire form for
+  commands. Regression tests cover every case.
 
 ## Already shipped
 
