@@ -21,6 +21,12 @@ from .email_client import (
     SearchCriteria,
 )
 
+# Safety ceiling for mail-fetch when the caller does not request an explicit limit.
+# fetch returns *all* rows by default (so nothing is silently dropped), but a runaway
+# collection would otherwise dump thousands of rows into context; past this many rows
+# the response is capped and says so loudly rather than truncating in silence.
+FETCH_ROW_CAP = 1000
+
 
 class EmailMCPServer(BaseMCPServer):
     """Email server implemented using the annotation-based MCP framework."""
@@ -500,7 +506,17 @@ class EmailMCPServer(BaseMCPServer):
         Args:
             collection_id: ID of the collection to transform
             operation: Named transformation to apply
-            parameters: Operation-specific parameters; no Python expressions are accepted
+            parameters: Operation-specific parameters as a JSON object; no Python
+                expressions are accepted. Shapes per operation (keys marked ? are
+                optional, shown with their default):
+                - select_columns / drop_columns: {columns: [str, ...]} — non-empty list of column names.
+                - rename_columns: {mapping: {old_name: new_name, ...}} — non-empty object.
+                - sort: {by: str | [str, ...], ascending?: bool | [bool, ...] = true}.
+                - filter: {column: str, operator: eq|ne|gt|ge|lt|le|contains|in|not_null|is_null, value: any, case_sensitive?: bool = false} — value is omitted for not_null/is_null; contains needs a string value; in needs a list value; case_sensitive applies only to contains.
+                - head / tail: {rows?: int = 5}.
+                - drop_duplicates: {subset?: [str, ...], keep?: first|last|false = first}.
+                - convert_datetime: {columns: [str, ...], errors?: raise|coerce = raise}.
+                - group_count: {columns: [str, ...], count_name?: str = count}.
 
         Returns:
             Updated collection metadata
@@ -510,19 +526,47 @@ class EmailMCPServer(BaseMCPServer):
 
     @mcp_tool(name="fetch")
     async def fetch(
-        self, collection_id: str, limit: int = 100, format: Literal["records", "dict", "csv", "json"] = "records"
+        self,
+        collection_id: str,
+        limit: Optional[int] = None,
+        format: Literal["records", "dict", "csv", "json"] = "records",
     ) -> Dict[str, Any]:
         """Retrieve email data from a collection created by search-emails.
 
         Args:
             collection_id: ID of the collection to fetch
-            limit: Maximum number of email records to return
+            limit: Maximum number of email records to return. Omit (null) to return
+                every row, bounded by a safety cap of 1000 rows. Any truncation is
+                reported loudly via a 'warning' field plus 'returned'/'total_rows',
+                never silently.
             format: Output format - 'records', 'dict', 'csv', or 'json'
 
         Returns:
-            Dictionary containing metadata and data
+            Dictionary containing metadata and data. Includes 'returned', 'total_rows',
+            'truncated', and (when truncated) a human-readable 'warning'.
         """
-        return self.datastore.fetch(collection_id, limit, format)
+        # limit=None means "all rows", but we still apply FETCH_ROW_CAP so an
+        # oversized collection cannot silently flood context. An explicit limit is
+        # honoured as given.
+        effective_limit = FETCH_ROW_CAP if limit is None else limit
+        result = self.datastore.fetch(collection_id, effective_limit, format)
+
+        if result.get("truncated"):
+            total = result["total_rows"]
+            returned = result["returned"]
+            hidden = total - returned
+            if limit is None:
+                result["warning"] = (
+                    f"Returned the first {returned} of {total} rows (hit the {FETCH_ROW_CAP}-row safety cap); "
+                    f"{hidden} not shown. Narrow the collection with mail-transform (e.g. filter/head) "
+                    f"or pass an explicit larger limit to retrieve the rest."
+                )
+            else:
+                result["warning"] = (
+                    f"Returned {returned} of {total} rows as requested; {hidden} more not shown. "
+                    f"Raise limit or omit it (up to {FETCH_ROW_CAP}) to retrieve more."
+                )
+        return result
 
     @mcp_tool(name="list")
     async def list_collections(self) -> List[Dict[str, Any]]:

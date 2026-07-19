@@ -21,13 +21,12 @@ message moves). Two consequences shape this roadmap:
   Reuses the existing `_count_emails()` primitive. Removes the `max_results=1`
   hack used just to read `total_available`, and relieves the cap. Shipped
   alongside #2.
-- ⏳ **#6a fetch truncation** — `mail-fetch` defaults to `limit=100`, silently
-  dropping row 101 (`"100 of 101"`). Default to returning all rows with an
-  explicit, loud cap instead of a silent one.
-- ⏳ **#6b transform param discoverability** — `mail-transform`'s `parameters`
-  is an opaque `object` in the schema, so the model guesses per-op shapes wrong
-  (it is *not* forced to strings — the datastore accepts lists/bools fine).
-  Document each operation's parameter shape in the tool schema.
+- ✅ **#6a fetch truncation** — `mail-fetch` now defaults to `limit=None` (return
+  every row), bounded by a loud `FETCH_ROW_CAP` (1000). Any truncation surfaces an
+  explicit `warning` plus `returned`/`total_rows`, never a silent `"100 of 101"`.
+- ✅ **#6b transform param discoverability** — `mail-transform`'s `parameters`
+  description now documents each operation's parameter shape (keys, types,
+  defaults), which flows into the tool's JSON schema via `parse_docstring_params`.
 
 ## Tier 2 — high value, more design
 

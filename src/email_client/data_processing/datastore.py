@@ -426,6 +426,7 @@ class DataStore:
             return {
                 "metadata": metadata.to_dict(),
                 "data": data,
+                "returned": len(display_df),
                 "truncated": limit is not None and len(df) > limit,
                 "total_rows": len(df),
             }
