@@ -198,6 +198,17 @@ class EmailMCPServer(BaseMCPServer):
         email_list, pagination = await client.search_emails(criteria)
 
         if not email_list:
+            # Distinguish "the filter matched nothing" from "you paged past the end of a
+            # non-empty result set". The latter is not an error — returning one risks the
+            # caller treating a valid end-of-pagination as a failed search and retrying.
+            if pagination.total_available > 0:
+                return {
+                    "message": (
+                        f"No emails at start_from={start_from}; "
+                        f"only {pagination.total_available} match this filter."
+                    ),
+                    "pagination": pagination.to_dict(),
+                }
             return {
                 "error": "No emails found matching the criteria.",
                 "pagination": pagination.to_dict(),

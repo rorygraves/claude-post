@@ -125,6 +125,12 @@ Two tools keep large scans out of context and off the collection store:
 - **`mail-count(folder, filters)`** — returns just `{folder, count}` for a filter, creating no collection. Use instead of `mail-search(max_results=1)` when you only need a total.
 - **`mail-aggregate(group_by, folder, filters, top_n)`** — groups matching emails server-side by `sender`, `recipient`, or `date` and returns a small top-N frequency table (`groups: [{key, count}]`) with no collection and no per-row data. Only the grouping-key header is fetched (bodies never are); sender/recipient keys are normalized to a lowercased bare address. This replaces paging thousands of rows into context to count them.
 
+### Search ordering and pagination
+
+`mail-search`'s `direction` (`newest`/`oldest`) sorts by **message arrival date**, not by IMAP UID. UIDs are assigned in folder-append order, so ordering by UID made `direction="newest"` return the highest-UID messages — a window that can span years by date and made `start_from` unreliable as "the Nth most-recent email". When the server advertises the `SORT` extension (Gmail does), ordering is done server-side via `UID SORT (ARRIVAL)` (ascending received date; `newest` reverses it); without `SORT` it falls back to UID order and logs a warning. See `_ordered_search_uids` in `email_client.py`.
+
+Positional paging with `start_from` therefore yields deterministic, non-overlapping, date-ordered windows over a single result set. Paging *past* the end of a non-empty set is not an error: `mail-search` returns `{message, pagination}` (with the true `total_available`) rather than the "No emails found" error, which is reserved for filters that genuinely match nothing.
+
 ### Attachment Downloads
 
 The `mail-download-attachment` tool saves files to disk instead of returning base64 data to context:

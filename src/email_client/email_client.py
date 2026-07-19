@@ -781,6 +781,14 @@ class EmailClient:
             logging.warning("Could not detect optional Gmail extensions: %s", type(exc).__name__)
             return False
 
+    async def _supports_sort(self, mail: imaplib.IMAP4_SSL) -> bool:
+        """Return whether the server supports the IMAP SORT extension (RFC 5256)."""
+        try:
+            return "SORT" in await self._get_capability_set(mail)
+        except Exception as exc:
+            logging.warning("Could not detect IMAP SORT support: %s", type(exc).__name__)
+            return False
+
     @staticmethod
     def _extract_fetch_number(descriptor: object, field: str) -> str | None:
         """Extract a decimal IMAP FETCH attribute without converting its precision."""
@@ -2134,10 +2142,46 @@ class EmailClient:
         logging.debug("Combined IMAP search criteria")
         return search_criteria
 
+    async def _ordered_search_uids(self, mail: imaplib.IMAP4_SSL, search_criteria: str, direction: str) -> List[bytes]:
+        """Return all matching UIDs ordered by arrival date for the requested direction.
+
+        Positional pagination is only meaningful over a stable, date-ordered sequence.
+        IMAP UIDs are assigned in folder-append order, not by message date, so ordering
+        by raw UID makes ``direction="newest"`` return the highest-UID messages rather
+        than the most recently received — a window that can span years by date and makes
+        ``start_from`` unreliable as "the Nth most-recent email".
+
+        When the server advertises the SORT extension (RFC 5256) we ask it for a
+        server-side ``UID SORT (ARRIVAL)`` — ascending by internal (received) date,
+        with equal dates broken deterministically by the server. ``newest`` reverses
+        that list. Without SORT we fall back to raw UID order (the previous behaviour)
+        and log that ordering is by UID, not date.
+        """
+        if await self._supports_sort(mail):
+            # SORT requires a charset argument; UTF-8 is universally supported by
+            # servers advertising the extension. ARRIVAL == INTERNALDATE (received).
+            sorted_data = await self._uid_command(mail, "SORT", "(ARRIVAL)", "UTF-8", search_criteria)
+            ordered = sorted_data[0].split() if sorted_data and sorted_data[0] else []
+            # SORT returns ascending (oldest first); reverse for newest first.
+            if direction == "newest":
+                ordered = list(reversed(ordered))
+            logging.debug("Ordered %s UIDs by arrival date via server SORT (%s)", len(ordered), direction)
+            return ordered
+
+        # Fallback: no SORT extension. Order by UID, which only approximates arrival
+        # order and is not a strict date sort. Positional paging remains stable within
+        # a single result set but is not guaranteed to be date-ordered.
+        logging.warning("Server lacks SORT extension; ordering by UID instead of arrival date")
+        messages = await self._uid_command(mail, "SEARCH", None, search_criteria)
+        ids = messages[0].split() if messages and messages[0] else []
+        if direction == "newest":
+            ids = list(reversed(ids))
+        return ids
+
     async def _search_with_pagination(
         self, mail: imaplib.IMAP4_SSL, search_criteria: str, criteria: SearchCriteria
     ) -> Tuple[List[bytes], int]:
-        """Execute a UID search and apply deterministic client-side pagination.
+        """Execute a UID search and apply deterministic, date-ordered client-side pagination.
 
         Args:
             mail: Active IMAP4_SSL connection
@@ -2147,24 +2191,14 @@ class EmailClient:
         Returns:
             Tuple of (paginated message ID bytes, total count of matching messages)
         """
-        messages = await self._uid_command(mail, "SEARCH", None, search_criteria)
-        if not messages or not messages[0]:
+        all_message_ids = await self._ordered_search_uids(mail, search_criteria, criteria.direction)
+        total_count = len(all_message_ids)
+        if total_count == 0:
             return [], 0
 
-        all_message_ids = messages[0].split()
-        total_count = len(all_message_ids)
         logging.info("Found %s total messages, applying pagination", total_count)
 
-        # Apply sorting based on direction (newest=reverse, oldest=normal)
-        if criteria.direction == "newest":
-            # Reverse the message IDs to get newest first (highest IDs first)
-            all_message_ids = list(reversed(all_message_ids))
-            logging.debug("Applied newest-first sorting (reversed message IDs)")
-        else:
-            # Keep original order for oldest first (lowest IDs first)
-            logging.debug("Applied oldest-first sorting (original message ID order)")
-
-        # Apply client-side pagination
+        # Apply client-side pagination over the date-ordered sequence.
         start_idx = criteria.start_from
         end_idx = start_idx + criteria.max_results
         paginated_ids: List[bytes] = all_message_ids[start_idx:end_idx]
