@@ -17,12 +17,15 @@ def mcp_tool(
     """Decorator to mark a method as an MCP tool.
 
     Args:
-        name: Optional custom name for the tool. If not provided, uses the method name.
+        name: Optional custom name for the tool. If not provided, the method name is
+            used with underscores converted to hyphens (e.g. ``search_emails`` -> ``search-emails``).
         description: Optional description override. If not provided, uses the method's docstring.
+        capability: Optional capability tag a server can use to enable/disable the tool
+            (see ``BaseMCPServer._is_tool_enabled``).
 
     Example:
         @mcp_tool(name="search-emails")
-        async def search_emails(self, start_date: str, end_date: str) -> List[Dict[str, Any]]:
+        async def search_emails(self, start_date: str, end_date: str) -> list[dict[str, Any]]:
             '''Search for emails within a date range.'''
             ...
     """

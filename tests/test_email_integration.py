@@ -24,7 +24,6 @@ Safety Features:
 import asyncio
 import logging
 from datetime import datetime
-from typing import List, Optional, Tuple
 
 from src.email_client.config import load_email_config
 from src.email_client.email_client import EmailClient, EmailDeletionError, EmailMessage, SearchCriteria
@@ -42,8 +41,8 @@ class EmailIntegrationTester:
         """Initialize tester with EmailClient and test tracking."""
         self.client = EmailClient()
         self.test_id = datetime.now().strftime("%Y%m%d_%H%M%S")
-        self.test_emails_sent: List[str] = []  # Track test emails for cleanup info
-        self.results: List[Tuple[str, bool, str]] = []  # (test_name, passed, details)
+        self.test_emails_sent: list[str] = []  # Track test emails for cleanup info
+        self.results: list[tuple[str, bool, str]] = []  # (test_name, passed, details)
 
     def log_result(self, test_name: str, passed: bool, details: str = "") -> None:
         """Log test result for final report."""
@@ -113,7 +112,7 @@ This email can be safely deleted after the integration test completes.
             self.log_result("Search today's emails", False, f"Error: {e}")
             return False
 
-    async def test_search_test_email(self) -> Optional[str]:
+    async def test_search_test_email(self) -> str | None:
         """Test 3: Search for our specific test email."""
         print("\n🔄 Testing: Search for test email with subject...")
 

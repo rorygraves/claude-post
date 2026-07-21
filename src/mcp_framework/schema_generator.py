@@ -6,10 +6,10 @@ import types
 import typing
 from datetime import date, datetime
 from enum import Enum
-from typing import Any, Dict, Optional, Union, get_args, get_origin
+from typing import Any, Union, get_args, get_origin
 
 
-def python_type_to_json_schema(type_hint: Any) -> Dict[str, Any]:
+def python_type_to_json_schema(type_hint: Any) -> dict[str, Any]:
     """Convert a Python type hint to a JSON schema definition.
 
     Args:
@@ -86,8 +86,19 @@ def python_type_to_json_schema(type_hint: Any) -> Dict[str, Any]:
     return {"type": "string"}
 
 
-def extract_parameter_schema(func: Any) -> Dict[str, Any]:
-    """Extract parameter schema from a function's type annotations.
+def _is_optional_annotation(annotation: Any) -> bool:
+    """Return whether an annotation is Optional (a Union that includes None)."""
+    origin = get_origin(annotation)
+    args = get_args(annotation)
+    return origin in (Union, types.UnionType) and type(None) in args
+
+
+def extract_parameter_schema(func: Any) -> dict[str, Any]:
+    """Extract a JSON schema for a function's parameters.
+
+    Parameter descriptions are read from the function's own docstring (see
+    ``parse_docstring_params``), so the returned schema is complete on its own
+    and needs no further enhancement by the caller.
 
     Args:
         func: The function to extract schema from
@@ -96,35 +107,32 @@ def extract_parameter_schema(func: Any) -> Dict[str, Any]:
         JSON schema for the function's parameters
     """
     signature = inspect.signature(func)
-    properties = {}
-    required = []
+    param_descriptions = parse_docstring_params(getattr(func, "__doc__", None))
+    properties: dict[str, Any] = {}
+    required: list[str] = []
 
     for param_name, param in signature.parameters.items():
         # Skip 'self' parameter for methods
         if param_name == "self":
             continue
 
-        # Get type annotation
-        if param.annotation != inspect.Parameter.empty:
-            param_schema = python_type_to_json_schema(param.annotation)
+        # Only annotated parameters can be described by a schema
+        if param.annotation is inspect.Parameter.empty:
+            continue
 
-            # Extract description from parameter docstring if available
-            # (This would require parsing the docstring - simplified for now)
-            param_schema["description"] = f"Parameter: {param_name}"
+        param_schema = python_type_to_json_schema(param.annotation)
 
-            properties[param_name] = param_schema
+        description = param_descriptions.get(param_name)
+        if description:
+            param_schema["description"] = description
 
-            # Check if parameter is required (no default value)
-            if param.default == inspect.Parameter.empty:
-                # Check if it's Optional in the type hint
-                origin = get_origin(param.annotation)
-                args = get_args(param.annotation)
-                is_optional = origin in (Union, types.UnionType) and type(None) in args
+        properties[param_name] = param_schema
 
-                if not is_optional:
-                    required.append(param_name)
+        # A parameter is required when it has no default and is not Optional
+        if param.default is inspect.Parameter.empty and not _is_optional_annotation(param.annotation):
+            required.append(param_name)
 
-    schema = {"type": "object", "properties": properties}
+    schema: dict[str, Any] = {"type": "object", "properties": properties}
 
     if required:
         schema["required"] = required
@@ -132,7 +140,7 @@ def extract_parameter_schema(func: Any) -> Dict[str, Any]:
     return schema
 
 
-def parse_docstring_params(docstring: Optional[str]) -> Dict[str, str]:
+def parse_docstring_params(docstring: str | None) -> dict[str, str]:
     """Parse parameter descriptions from a docstring.
 
     Supports Google-style and NumPy-style docstrings.

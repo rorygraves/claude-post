@@ -3,7 +3,7 @@ name = "email_client"
 version = "0.3.0"
 description = "Email search and management tool using MCP protocol"
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = ">=3.14"
 dependencies = [
     "mcp>=1.9.4,<2",
     "python-dotenv>=1.1.0",
@@ -37,7 +37,7 @@ email-client = "email_client:main"
 
 [tool.black]
 line-length = 120
-target-version = ["py312"]
+target-version = ["py314"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -47,13 +47,13 @@ markers = [
 ]
 
 [tool.mypy]
-python_version = "3.12"
+python_version = "3.14"
 strict = true
 ignore_missing_imports = true
 
 [tool.ruff]
 line-length = 120
-target-version = "py312"
+target-version = "py314"
 
 [tool.ruff.lint]
 select = [

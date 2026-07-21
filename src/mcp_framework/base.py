@@ -8,14 +8,14 @@ import logging
 import os
 import sys
 from datetime import date, datetime
-from typing import Any, Dict, List, Optional, Union
+from typing import Any
 
 import mcp.server.stdio
 from mcp import types
 from mcp.server import NotificationOptions, Server
 from mcp.server.models import InitializationOptions
 
-from .schema_generator import extract_parameter_schema, parse_docstring_params
+from .schema_generator import extract_parameter_schema
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +47,7 @@ class BaseMCPServer:
                 super().__init__("email-server", "1.0.0")
 
             @mcp_tool(name="send-email")
-            async def send_email(self, to: List[str], subject: str, content: str) -> str:
+            async def send_email(self, to: list[str], subject: str, content: str) -> str:
                 '''Send an email to the specified recipients.
 
                 Args:
@@ -71,7 +71,7 @@ class BaseMCPServer:
         self.server_version = server_version
         self.tool_prefix = tool_prefix
         self.server: Server[Any] = Server(server_name)
-        self._tools: Dict[str, Any] = {}
+        self._tools: dict[str, Any] = {}
 
         # Set up logging
         log_level = os.getenv("EMAIL_CLIENT_LOG_LEVEL", "INFO").upper()
@@ -104,7 +104,7 @@ class BaseMCPServer:
         """Register MCP protocol handlers."""
 
         @self.server.list_tools()  # type: ignore[no-untyped-call,untyped-decorator]
-        async def handle_list_tools() -> List[types.Tool]:
+        async def handle_list_tools() -> list[types.Tool]:
             """List all available tools."""
             tools = []
 
@@ -115,15 +115,9 @@ class BaseMCPServer:
                     # Use first line of docstring as description
                     description = method.__doc__.strip().split("\n")[0]
 
-                # Extract parameter schema
+                # Extract parameter schema (parameter descriptions are read from
+                # the method's docstring by extract_parameter_schema itself)
                 input_schema = extract_parameter_schema(method)
-
-                # Enhance parameter descriptions from docstring
-                if method.__doc__:
-                    param_descriptions = parse_docstring_params(method.__doc__)
-                    for param_name, param_desc in param_descriptions.items():
-                        if param_name in input_schema.get("properties", {}):
-                            input_schema["properties"][param_name]["description"] = param_desc
 
                 tools.append(
                     types.Tool(
@@ -136,8 +130,8 @@ class BaseMCPServer:
 
         @self.server.call_tool()  # type: ignore[untyped-decorator]
         async def handle_call_tool(
-            name: str, arguments: Optional[Dict[str, Any]]
-        ) -> List[Union[types.TextContent, types.ImageContent, types.EmbeddedResource]]:
+            name: str, arguments: dict[str, Any] | None
+        ) -> list[types.TextContent | types.ImageContent | types.EmbeddedResource]:
             """Handle tool execution requests."""
             if name not in self._tools:
                 raise ValueError(f"Unknown tool: {name}")
@@ -171,13 +165,13 @@ class BaseMCPServer:
                 return [types.TextContent(type="text", text=json.dumps(error))]
 
         @self.server.list_prompts()  # type: ignore[no-untyped-call,untyped-decorator]
-        async def handle_list_prompts() -> List[types.Prompt]:
+        async def handle_list_prompts() -> list[types.Prompt]:
             """Handle list prompts request."""
             # Override in subclass if prompts are needed
             return []
 
         @self.server.list_resources()  # type: ignore[no-untyped-call,untyped-decorator]
-        async def handle_list_resources() -> List[types.Resource]:
+        async def handle_list_resources() -> list[types.Resource]:
             """Handle list resources request."""
             # Override in subclass if resources are needed
             return []
@@ -215,15 +209,8 @@ class BaseMCPServer:
             print(f"Tool: {tool_name}")
             print(f"  Description: {description or 'No description available'}")
 
-            # Get parameter schema
+            # Get parameter schema (descriptions come from the docstring)
             input_schema = extract_parameter_schema(method)
-
-            # Enhance parameter descriptions from docstring
-            if method.__doc__:
-                param_descriptions = parse_docstring_params(method.__doc__)
-                for param_name, param_desc in param_descriptions.items():
-                    if param_name in input_schema.get("properties", {}):
-                        input_schema["properties"][param_name]["description"] = param_desc
 
             # Print parameters
             if "properties" in input_schema:
@@ -252,7 +239,7 @@ class BaseMCPServer:
 
             print()  # Empty line between tools
 
-    def parse_args(self, args: Optional[List[str]] = None) -> argparse.Namespace:
+    def parse_args(self, args: list[str] | None = None) -> argparse.Namespace:
         """Parse command line arguments.
 
         Args:
@@ -282,7 +269,7 @@ class BaseMCPServer:
         """
         pass
 
-    def main(self, args: Optional[List[str]] = None) -> None:
+    def main(self, args: list[str] | None = None) -> None:
         """Main entry point for the server.
 
         Args:

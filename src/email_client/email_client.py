@@ -23,7 +23,7 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.utils import parseaddr, parsedate_to_datetime
 from pathlib import Path
-from typing import Any, Dict, List, Literal, Optional, ParamSpec, Tuple, TypeVar, Union
+from typing import Any, Literal, ParamSpec, TypeVar
 from urllib.parse import quote
 
 # Constants from environment configuration
@@ -196,7 +196,7 @@ def decode_imap_utf7(text: str) -> str:
             padding = "=" * (-len(b64) % 4)
             try:
                 result.append(base64.b64decode(b64 + padding).decode("utf-16-be"))
-            except (ValueError, UnicodeDecodeError):
+            except ValueError, UnicodeDecodeError:
                 result.append(text[i : end + 1])  # leave malformed run as-is
         i = end + 1
     return "".join(result)
@@ -210,13 +210,13 @@ def _decode_list_bytes(raw: bytes) -> str:
         return raw.decode("latin-1")
 
 
-def _tokenize_imap_astrings(text: str) -> List[str]:
+def _tokenize_imap_astrings(text: str) -> list[str]:
     """Tokenize the delimiter/mailbox portion of a LIST line into unescaped strings.
 
     Each token is a quoted string (honouring ``\\"`` and ``\\\\`` escapes), the atom
     ``NIL`` (returned as an empty string), or a bare atom read up to whitespace.
     """
-    tokens: List[str] = []
+    tokens: list[str] = []
     i = 0
     length = len(text)
     while i < length:
@@ -248,7 +248,7 @@ def _tokenize_imap_astrings(text: str) -> List[str]:
     return tokens
 
 
-def parse_list_response_line(entry: object) -> Optional[Dict[str, str]]:
+def parse_list_response_line(entry: object) -> dict[str, str] | None:
     """Parse one imaplib LIST entry into ``{name, display_name, attributes}``.
 
     Handles every mailbox-name encoding servers actually emit, which the previous
@@ -265,7 +265,7 @@ def parse_list_response_line(entry: object) -> Optional[Dict[str, str]]:
     modified-UTF-7-decoded, ``[Gmail]/``-stripped human label. Returns ``None`` for
     entries that are not parseable folder lines.
     """
-    literal_name: Optional[str] = None
+    literal_name: str | None = None
     if isinstance(entry, tuple):
         if len(entry) < 2 or not isinstance(entry[0], (bytes, bytearray)):
             return None
@@ -326,7 +326,7 @@ def normalize_email_date(date_str: str) -> str:
     try:
         dt = parsedate_to_datetime(date_str)
         return dt.isoformat()
-    except (ValueError, TypeError):
+    except ValueError, TypeError:
         return date_str
 
 
@@ -336,7 +336,7 @@ def decode_email_header(value: str | None, default: str) -> str:
         return default
     try:
         return str(make_header(decode_header(value)))
-    except (LookupError, UnicodeDecodeError):
+    except LookupError, UnicodeDecodeError:
         return value
 
 
@@ -423,7 +423,7 @@ def _validate_output_directory(output_dir: str) -> None:
         )
 
 
-def _get_unique_filepath(output_dir: str, filename: str) -> Tuple[str, str]:
+def _get_unique_filepath(output_dir: str, filename: str) -> tuple[str, str]:
     """Generate a unique filepath, handling collisions.
 
     Args:
@@ -474,7 +474,7 @@ def _get_unique_filepath(output_dir: str, filename: str) -> Tuple[str, str]:
     )
 
 
-def _format_email_as_markdown(email_content: Dict[str, Any]) -> str:
+def _format_email_as_markdown(email_content: dict[str, Any]) -> str:
     """Format email content as markdown with YAML frontmatter.
 
     Converts email data structure to a markdown file format with
@@ -540,7 +540,7 @@ def _format_email_as_markdown(email_content: Dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def _generate_email_filename(email_content: Dict[str, Any]) -> str:
+def _generate_email_filename(email_content: dict[str, Any]) -> str:
     """Generate a filename for an email based on date and subject.
 
     Creates filename in format: YYYYMMDD-HHMM-sanitized_subject.md
@@ -567,7 +567,7 @@ def _generate_email_filename(email_content: Dict[str, Any]) -> str:
             dt = datetime.fromisoformat(date_str_clean)
         else:
             dt = datetime.fromisoformat(date_str[:19]) if date_str else datetime.now()
-    except (ValueError, TypeError):
+    except ValueError, TypeError:
         dt = datetime.now()
 
     # Create date prefix
@@ -608,12 +608,12 @@ class SearchCriteria:
     """
 
     folder: str = "inbox"
-    start_date: Optional[str] = None
-    end_date: Optional[str] = None
-    subject: Optional[str] = None
-    sender: Optional[str] = None
-    to: Optional[str] = None
-    body: Optional[str] = None
+    start_date: str | None = None
+    end_date: str | None = None
+    subject: str | None = None
+    sender: str | None = None
+    to: str | None = None
+    body: str | None = None
     max_results: int = 100
     start_from: int = 0
     direction: Literal["newest", "oldest"] = "newest"
@@ -671,9 +671,9 @@ class PaginationInfo:
     returned: int
     start_from: int
     has_more: bool
-    next_start_from: Optional[int]
+    next_start_from: int | None
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """Convert pagination info to a dictionary for JSON serialization."""
         return {
             "total_available": self.total_available,
@@ -693,17 +693,17 @@ class MailboxOperationResult:
     caller never mistakes a silent no-op for success.
     """
 
-    requested: List[str]
-    affected: List[str]
-    not_found: List[str]
+    requested: list[str]
+    affected: list[str]
+    not_found: list[str]
 
     @classmethod
-    def from_request(cls, requested: List[str], affected: List[str]) -> "MailboxOperationResult":
+    def from_request(cls, requested: list[str], affected: list[str]) -> "MailboxOperationResult":
         affected_set = set(affected)
         not_found = [uid for uid in requested if uid not in affected_set]
         return cls(requested=list(requested), affected=list(affected), not_found=not_found)
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "requested_count": len(self.requested),
             "affected_count": len(self.affected),
@@ -727,10 +727,10 @@ class EmailMessage:
         cc_addresses: List of CC recipient addresses (optional)
     """
 
-    to_addresses: List[str]
+    to_addresses: list[str]
     subject: str
     content: str
-    cc_addresses: Optional[List[str]] = None
+    cc_addresses: list[str] | None = None
 
     def __post_init__(self) -> None:
         """Automatically validate message data after object creation."""
@@ -814,7 +814,7 @@ class EmailClient:
         return self.config.smtp_port
 
     @staticmethod
-    def _validate_email_ids(email_ids: List[str], *, maximum: int = 500) -> None:
+    def _validate_email_ids(email_ids: list[str], *, maximum: int = 500) -> None:
         if not email_ids:
             raise ValueError("At least one email UID is required")
         if len(email_ids) > maximum:
@@ -823,7 +823,7 @@ class EmailClient:
             raise ValueError("Email IDs must be positive numeric IMAP UIDs")
 
     @staticmethod
-    def _validate_gmail_msgids(gmail_msgids: List[str], *, maximum: int = 500) -> None:
+    def _validate_gmail_msgids(gmail_msgids: list[str], *, maximum: int = 500) -> None:
         if not gmail_msgids:
             raise ValueError("At least one gmail_msgid is required")
         if len(gmail_msgids) > maximum:
@@ -968,7 +968,7 @@ class EmailClient:
         message_id: object = None,
         gmail_msgid: object = None,
         gmail_thrid: object = None,
-    ) -> Dict[str, str | None]:
+    ) -> dict[str, str | None]:
         """Return JSON-safe backlink fields with Gmail identifiers kept as strings."""
         normalized_message_id = self._normalize_message_id(message_id)
         normalized_gmail_msgid = str(gmail_msgid) if isinstance(gmail_msgid, str) and gmail_msgid.isdigit() else None
@@ -982,9 +982,9 @@ class EmailClient:
 
     def _merge_backlink_fields(
         self,
-        content: Dict[str, Any],
-        metadata: Dict[str, str | None] | None,
-    ) -> Dict[str, Any]:
+        content: dict[str, Any],
+        metadata: dict[str, str | None] | None,
+    ) -> dict[str, Any]:
         """Merge optional Gmail metadata with Message-ID parsed from full content."""
         metadata = metadata or {}
         content.update(
@@ -999,8 +999,8 @@ class EmailClient:
     async def _fetch_backlink_metadata(
         self,
         mail: imaplib.IMAP4_SSL,
-        email_ids: List[str],
-    ) -> Dict[str, Dict[str, str | None]]:
+        email_ids: list[str],
+    ) -> dict[str, dict[str, str | None]]:
         """Fetch stable Gmail identifiers and Message-ID headers without setting Seen."""
         if not email_ids or not await self._supports_gmail_extensions(mail):
             return {}
@@ -1011,7 +1011,7 @@ class EmailClient:
             logging.warning("Optional Gmail metadata fetch failed: %s", type(exc).__name__)
             return {}
 
-        metadata_by_uid: Dict[str, Dict[str, str | None]] = {}
+        metadata_by_uid: dict[str, dict[str, str | None]] = {}
         for response in responses:
             if not isinstance(response, tuple) or len(response) < 2:
                 continue
@@ -1207,7 +1207,7 @@ class EmailClient:
         except Exception as e:
             logging.debug(f"Server ID query failed (not supported): {e}")
 
-    async def search_emails(self, criteria: SearchCriteria) -> Tuple[List[Dict[str, Any]], PaginationInfo]:
+    async def search_emails(self, criteria: SearchCriteria) -> tuple[list[dict[str, Any]], PaginationInfo]:
         """Search for emails matching the specified criteria.
 
         Connects to IMAP, selects the appropriate folder, and searches for emails
@@ -1256,11 +1256,11 @@ class EmailClient:
 
     async def get_email_content(
         self,
-        email_id: Optional[str] = None,
+        email_id: str | None = None,
         folder: str = "inbox",
         *,
-        gmail_msgid: Optional[str] = None,
-    ) -> Optional[Dict[str, Any]]:
+        gmail_msgid: str | None = None,
+    ) -> dict[str, Any] | None:
         """Get full content of a specific email.
 
         Target the email either by folder-scoped IMAP UID (``email_id``) or by stable
@@ -1317,8 +1317,8 @@ class EmailClient:
                 await self.close_imap_connection(mail)
 
     async def get_email_contents_bulk(
-        self, email_ids: List[str], folder: str = "inbox", max_emails: int = 50
-    ) -> Dict[str, Any]:
+        self, email_ids: list[str], folder: str = "inbox", max_emails: int = 50
+    ) -> dict[str, Any]:
         """Get full content of multiple emails in a single connection.
 
         Args:
@@ -1344,8 +1344,8 @@ class EmailClient:
             mail = await self.connect_imap()
             await self._select_folder(mail, folder)
 
-            emails: List[Dict[str, Any]] = []
-            errors: List[Dict[str, str]] = []
+            emails: list[dict[str, Any]] = []
+            errors: list[dict[str, str]] = []
 
             # Batch fetch for efficiency using comma-separated IDs
             message_set = ",".join(limited_ids)
@@ -1382,7 +1382,7 @@ class EmailClient:
 
     async def download_attachment(
         self, email_id: str, attachment_index: int, output_dir: str, folder: str = "inbox"
-    ) -> Optional[Dict[str, Any]]:
+    ) -> dict[str, Any] | None:
         """Download a specific attachment from an email and save to disk.
 
         Args:
@@ -1480,7 +1480,7 @@ class EmailClient:
             # Attachment not found at the given index
             return None
 
-        except (ValueError, EmailAttachmentError):
+        except ValueError, EmailAttachmentError:
             raise
         except Exception as e:
             logging.error("Attachment download failed with %s", type(e).__name__)
@@ -1495,7 +1495,7 @@ class EmailClient:
         output_dir: str,
         folder: str = "inbox",
         include_attachments: bool = True,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Export a single email to a markdown file with optional attachments.
 
         Writes email content directly to disk without returning it to caller.
@@ -1541,7 +1541,7 @@ class EmailClient:
         except OSError as e:
             raise EmailAttachmentError(f"Failed to write markdown file to {filepath}: {e}") from e
 
-        result: Dict[str, Any] = {
+        result: dict[str, Any] = {
             "email_id": email_id,
             "filepath": filepath,
             "attachments": [],
@@ -1550,7 +1550,7 @@ class EmailClient:
         # Download attachments if requested
         if include_attachments:
             raw_attachments: Any = content.get("attachments", [])
-            attachments: List[Dict[str, Any]] = raw_attachments if isinstance(raw_attachments, list) else []
+            attachments: list[dict[str, Any]] = raw_attachments if isinstance(raw_attachments, list) else []
             for att in attachments:
                 att_index: int = int(att.get("index", 0))
                 try:
@@ -1576,11 +1576,11 @@ class EmailClient:
 
     async def export_emails_bulk(
         self,
-        email_ids: List[str],
+        email_ids: list[str],
         output_dir: str,
         folder: str = "inbox",
         include_attachments: bool = True,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Export multiple emails to markdown files with optional attachments.
 
         Writes emails directly to disk without returning content to caller.
@@ -1604,7 +1604,7 @@ class EmailClient:
         # Validate output directory once
         _validate_output_directory(output_dir)
 
-        result: Dict[str, Any] = {
+        result: dict[str, Any] = {
             "output_dir": output_dir,
             "emails_exported": 0,
             "files_created": [],
@@ -1676,11 +1676,11 @@ class EmailClient:
 
     async def delete_email(
         self,
-        email_ids: Union[str, List[str], None] = None,
+        email_ids: str | list[str] | None = None,
         folder: str = "inbox",
         permanent: bool = False,
         *,
-        gmail_msgids: Union[str, List[str], None] = None,
+        gmail_msgids: str | list[str] | None = None,
     ) -> "MailboxOperationResult":
         """Delete one or more emails by moving to trash or permanently deleting.
 
@@ -1717,8 +1717,8 @@ class EmailClient:
 
     @staticmethod
     def _normalize_target_identifiers(
-        email_ids: Union[str, List[str], None],
-        gmail_msgids: Union[str, List[str], None],
+        email_ids: str | list[str] | None,
+        gmail_msgids: str | list[str] | None,
         *,
         action: str,
     ) -> tuple[list[str] | None, list[str] | None, list[str]]:
@@ -1758,7 +1758,7 @@ class EmailClient:
         *,
         email_ids: list[str] | None = None,
         gmail_msgids: list[str] | None = None,
-    ) -> List[str]:
+    ) -> list[str]:
         """Permanently delete matching messages; return the identifiers acted upon."""
         mail = None
         try:
@@ -1794,7 +1794,7 @@ class EmailClient:
         *,
         email_ids: list[str] | None = None,
         gmail_msgids: list[str] | None = None,
-    ) -> List[str]:
+    ) -> list[str]:
         """Move matching messages to trash; return the identifiers acted upon."""
         mail = None
         try:
@@ -1897,7 +1897,7 @@ class EmailClient:
         logging.debug("Using fallback trash folder")
         return default_trash
 
-    async def list_folders(self) -> List[Dict[str, str]]:
+    async def list_folders(self) -> list[dict[str, str]]:
         """List all available IMAP folders with their attributes.
 
         Returns:
@@ -1945,11 +1945,11 @@ class EmailClient:
 
     async def move_email(
         self,
-        email_ids: Union[str, List[str], None] = None,
+        email_ids: str | list[str] | None = None,
         source_folder: str = "inbox",
         destination_folder: str = "",
         *,
-        gmail_msgids: Union[str, List[str], None] = None,
+        gmail_msgids: str | list[str] | None = None,
     ) -> "MailboxOperationResult":
         """Move one or more emails from one folder to another.
 
@@ -1997,7 +1997,7 @@ class EmailClient:
         *,
         email_ids: list[str] | None = None,
         gmail_msgids: list[str] | None = None,
-    ) -> List[str]:
+    ) -> list[str]:
         """Move matching messages out of the source folder; return the identifiers moved."""
         mail = None
         try:
@@ -2070,7 +2070,7 @@ class EmailClient:
             logging.error("Folder validation failed with %s", type(e).__name__)
             raise EmailDeletionError(f"Failed to validate destination folder '{folder_name}': {e!s}") from e
 
-    async def count_daily_emails(self, start_date: str, end_date: str) -> Dict[str, int]:
+    async def count_daily_emails(self, start_date: str, end_date: str) -> dict[str, int]:
         """Count emails received for each day in the specified date range.
 
         Iterates through each day between start_date and end_date (inclusive)
@@ -2213,7 +2213,7 @@ class EmailClient:
         logging.debug("Built end-date criterion")
         return date_criteria
 
-    def _build_field_criteria(self, criteria: SearchCriteria) -> List[str]:
+    def _build_field_criteria(self, criteria: SearchCriteria) -> list[str]:
         """Build field-specific search criteria with proper escaping.
 
         Escapes user input to prevent IMAP injection attacks and syntax errors.
@@ -2246,7 +2246,7 @@ class EmailClient:
 
         return field_criteria
 
-    def _combine_criteria_parts(self, search_criteria_parts: List[str]) -> str:
+    def _combine_criteria_parts(self, search_criteria_parts: list[str]) -> str:
         """Combine search criteria parts into final search string."""
         if not search_criteria_parts:
             search_criteria = "ALL"
@@ -2259,7 +2259,7 @@ class EmailClient:
         logging.debug("Combined IMAP search criteria")
         return search_criteria
 
-    async def _ordered_search_uids(self, mail: imaplib.IMAP4_SSL, search_criteria: str, direction: str) -> List[bytes]:
+    async def _ordered_search_uids(self, mail: imaplib.IMAP4_SSL, search_criteria: str, direction: str) -> list[bytes]:
         """Return all matching UIDs ordered by arrival date for the requested direction.
 
         Positional pagination is only meaningful over a stable, date-ordered sequence.
@@ -2297,7 +2297,7 @@ class EmailClient:
 
     async def _search_with_pagination(
         self, mail: imaplib.IMAP4_SSL, search_criteria: str, criteria: SearchCriteria
-    ) -> Tuple[List[bytes], int]:
+    ) -> tuple[list[bytes], int]:
         """Execute a UID search and apply deterministic, date-ordered client-side pagination.
 
         Args:
@@ -2318,7 +2318,7 @@ class EmailClient:
         # Apply client-side pagination over the date-ordered sequence.
         start_idx = criteria.start_from
         end_idx = start_idx + criteria.max_results
-        paginated_ids: List[bytes] = all_message_ids[start_idx:end_idx]
+        paginated_ids: list[bytes] = all_message_ids[start_idx:end_idx]
 
         logging.info(
             "Returning %s messages after pagination (direction: %s)",
@@ -2329,7 +2329,7 @@ class EmailClient:
 
     async def _execute_search(
         self, mail: imaplib.IMAP4_SSL, search_criteria: str, criteria: SearchCriteria
-    ) -> Tuple[List[Dict[str, Any]], PaginationInfo]:
+    ) -> tuple[list[dict[str, Any]], PaginationInfo]:
         """Execute IMAP search with pagination support and return formatted email summaries.
 
         Performs an IMAP SEARCH command with the given criteria, supports pagination
@@ -2390,7 +2390,7 @@ class EmailClient:
         )
 
         # Process the batch response into email summaries
-        email_list: List[Dict[str, Any]] = []
+        email_list: list[dict[str, Any]] = []
         if msg_data_list:
             for msg_data in msg_data_list:
                 if msg_data and len(msg_data) >= 2:  # Ensure we have both ID and content
@@ -2420,9 +2420,7 @@ class EmailClient:
 
         return email_list, pagination
 
-    async def _send_via_smtp(
-        self, msg: MIMEMultipart, to_addresses: List[str], cc_addresses: Optional[List[str]]
-    ) -> None:
+    async def _send_via_smtp(self, msg: MIMEMultipart, to_addresses: list[str], cc_addresses: list[str] | None) -> None:
         """Send email via SMTP."""
 
         def send_sync() -> None:
@@ -2473,7 +2471,7 @@ class EmailClient:
 
     async def aggregate_emails(
         self, criteria: SearchCriteria, group_by: str, top_n: int = 20, batch_size: int = 500
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Group matching emails server-side and return a small top-N frequency table.
 
         Fetches only the header/metadata needed for the grouping key (never bodies),
@@ -2523,7 +2521,7 @@ class EmailClient:
                 "groups": [{"key": key, "count": count} for key, count in top],
                 "truncated": len(counts) > top_n,
             }
-        except (EmailSearchError, ValueError):
+        except EmailSearchError, ValueError:
             raise
         except Exception as e:
             logging.error("Email aggregation failed with %s", type(e).__name__)
@@ -2532,7 +2530,7 @@ class EmailClient:
             if mail:
                 await self.close_imap_connection(mail)
 
-    async def _fetch_group_keys(self, mail: imaplib.IMAP4_SSL, uid_batch: List[bytes], group_by: str) -> List[str]:
+    async def _fetch_group_keys(self, mail: imaplib.IMAP4_SSL, uid_batch: list[bytes], group_by: str) -> list[str]:
         """Fetch and extract the grouping key for one batch of UIDs."""
         if not uid_batch:
             return []
@@ -2543,7 +2541,7 @@ class EmailClient:
 
         header_field = "FROM" if group_by == "sender" else "TO"
         data = await self._uid_command(mail, "FETCH", message_set, f"(UID BODY.PEEK[HEADER.FIELDS ({header_field})])")
-        keys: List[str] = []
+        keys: list[str] = []
         for item in data:
             if not (isinstance(item, tuple) and len(item) >= 2 and isinstance(item[1], (bytes, bytearray))):
                 continue
@@ -2569,7 +2567,7 @@ class EmailClient:
         except ValueError:
             return None
 
-    def _format_email_summary(self, msg_data: Tuple[Any, ...]) -> Dict[str, Any]:
+    def _format_email_summary(self, msg_data: tuple[Any, ...]) -> dict[str, Any]:
         """Format an email message into a summary dict with basic information."""
         email_body = email.message_from_bytes(msg_data[0][1])
         descriptor = msg_data[0][0]
@@ -2600,18 +2598,18 @@ class EmailClient:
         charset = part.get_content_charset() or "utf-8"
         try:
             return payload.decode(charset)
-        except (UnicodeDecodeError, LookupError):
+        except UnicodeDecodeError, LookupError:
             # Fallback to UTF-8 with replacement characters for invalid bytes
             return payload.decode("utf-8", errors="replace")
 
-    def _format_email_content(self, msg_data: Tuple[Any, ...]) -> Dict[str, Any]:
+    def _format_email_content(self, msg_data: tuple[Any, ...]) -> dict[str, Any]:
         """Format an email message into a dict with full content and attachment info."""
         email_body = email.message_from_bytes(msg_data[0][1])
 
         # Extract body content and attachment info
         body = ""
         html_body = ""
-        attachments: List[Dict[str, Any]] = []
+        attachments: list[dict[str, Any]] = []
         attachment_index = 0
 
         if email_body.is_multipart():

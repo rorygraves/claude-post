@@ -25,7 +25,7 @@ A Model Context Protocol (MCP) server that provides a seamless email management 
 
 ## Prerequisites
 
-- Python 3.12 or higher
+- Python 3.14 or higher
 - A Gmail account (or other email provider)
 - If using Gmail:
   - Two-factor authentication enabled

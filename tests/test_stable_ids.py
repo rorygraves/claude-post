@@ -34,7 +34,7 @@ def _gmail_search_mail(msgid_to_uid: dict[str, bytes]) -> MagicMock:
         if command == "SEARCH":
             criteria = str(args[-1])
             if criteria.startswith("X-GM-MSGID"):
-                msgid = criteria.split()[-1]
+                msgid = criteria.rsplit(maxsplit=1)[-1]
                 uid = msgid_to_uid.get(msgid)
                 return ("OK", [uid]) if uid else ("OK", [b""])
             if criteria.startswith("UID"):

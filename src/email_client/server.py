@@ -7,7 +7,7 @@ annotation-based MCP framework.
 import argparse
 import asyncio
 from datetime import datetime
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, Literal
 
 import pandas as pd
 
@@ -122,7 +122,7 @@ class EmailMCPServer(BaseMCPServer):
         )
 
     @mcp_tool(name="accounts")
-    async def accounts(self) -> List[Dict[str, Any]]:
+    async def accounts(self) -> list[dict[str, Any]]:
         """List the configured email accounts that can be targeted with the `account` parameter.
 
         Returns:
@@ -142,19 +142,19 @@ class EmailMCPServer(BaseMCPServer):
     @mcp_tool(name="search")
     async def search(
         self,
-        start_date: Optional[str] = None,
-        end_date: Optional[str] = None,
-        subject: Optional[str] = None,
-        sender: Optional[str] = None,
-        to: Optional[str] = None,
-        body: Optional[str] = None,
+        start_date: str | None = None,
+        end_date: str | None = None,
+        subject: str | None = None,
+        sender: str | None = None,
+        to: str | None = None,
+        body: str | None = None,
         folder: str = "inbox",
         max_results: int = 100,
         start_from: int = 0,
-        collection_name: Optional[str] = None,
+        collection_name: str | None = None,
         direction: Literal["newest", "oldest"] = "newest",
-        account: Optional[str] = None,
-    ) -> Dict[str, Any]:
+        account: str | None = None,
+    ) -> dict[str, Any]:
         """Search emails and automatically create a data collection from the results.
 
         Returns collection metadata only (ID, name, shape, columns, creation time) - NOT individual email data.
@@ -234,12 +234,12 @@ class EmailMCPServer(BaseMCPServer):
     @mcp_tool(name="get-content")
     async def get_content(
         self,
-        email_id: Optional[str] = None,
-        email_ids: Optional[List[str]] = None,
+        email_id: str | None = None,
+        email_ids: list[str] | None = None,
         folder: str = "inbox",
-        account: Optional[str] = None,
-        gmail_msgid: Optional[str] = None,
-    ) -> Dict[str, Any]:
+        account: str | None = None,
+        gmail_msgid: str | None = None,
+    ) -> dict[str, Any]:
         """Get the full content of one or more emails by ID.
 
         Supports single retrieval (by IMAP UID or stable Gmail id) and bulk retrieval.
@@ -266,7 +266,7 @@ class EmailMCPServer(BaseMCPServer):
             return email_content or {"error": "No email content found."}
 
         # Collect all IDs to fetch
-        ids_to_fetch: List[str] = []
+        ids_to_fetch: list[str] = []
         if email_id:
             ids_to_fetch.append(email_id)
         if email_ids:
@@ -294,8 +294,8 @@ class EmailMCPServer(BaseMCPServer):
         attachment_index: int,
         output_dir: str,
         folder: str = "inbox",
-        account: Optional[str] = None,
-    ) -> Dict[str, Any]:
+        account: str | None = None,
+    ) -> dict[str, Any]:
         """Download a specific attachment from an email and save to disk.
 
         First use mail-get-content to see available attachments (with index, filename,
@@ -333,11 +333,11 @@ class EmailMCPServer(BaseMCPServer):
     @mcp_tool(name="send", capability="send")
     async def send(
         self,
-        to: List[str],
+        to: list[str],
         subject: str,
         content: str,
-        cc: Optional[List[str]] = None,
-        account: Optional[str] = None,
+        cc: list[str] | None = None,
+        account: str | None = None,
     ) -> str:
         """Send an email after user confirms the details.
 
@@ -364,7 +364,7 @@ class EmailMCPServer(BaseMCPServer):
         return "Email sent successfully."
 
     @mcp_tool(name="folders")
-    async def folders(self, account: Optional[str] = None) -> List[Dict[str, str]]:
+    async def folders(self, account: str | None = None) -> list[dict[str, str]]:
         """List all available email folders that can be used with other tools.
 
         Args:
@@ -376,7 +376,7 @@ class EmailMCPServer(BaseMCPServer):
         return await self._client_for(account).list_folders()
 
     @mcp_tool(name="count-daily")
-    async def count_daily(self, start_date: str, end_date: str, account: Optional[str] = None) -> Dict[str, int]:
+    async def count_daily(self, start_date: str, end_date: str, account: str | None = None) -> dict[str, int]:
         """Count emails received for each day in a date range.
 
         Args:
@@ -396,15 +396,15 @@ class EmailMCPServer(BaseMCPServer):
     @mcp_tool(name="count")
     async def count(
         self,
-        start_date: Optional[str] = None,
-        end_date: Optional[str] = None,
-        subject: Optional[str] = None,
-        sender: Optional[str] = None,
-        to: Optional[str] = None,
-        body: Optional[str] = None,
+        start_date: str | None = None,
+        end_date: str | None = None,
+        subject: str | None = None,
+        sender: str | None = None,
+        to: str | None = None,
+        body: str | None = None,
         folder: str = "inbox",
-        account: Optional[str] = None,
-    ) -> Dict[str, Any]:
+        account: str | None = None,
+    ) -> dict[str, Any]:
         """Count emails matching a filter WITHOUT creating a collection or fetching rows.
 
         Use this instead of mail-search when you only need a total (e.g. "how many from
@@ -439,16 +439,16 @@ class EmailMCPServer(BaseMCPServer):
     async def aggregate(
         self,
         group_by: Literal["sender", "recipient", "date"],
-        start_date: Optional[str] = None,
-        end_date: Optional[str] = None,
-        subject: Optional[str] = None,
-        sender: Optional[str] = None,
-        to: Optional[str] = None,
-        body: Optional[str] = None,
+        start_date: str | None = None,
+        end_date: str | None = None,
+        subject: str | None = None,
+        sender: str | None = None,
+        to: str | None = None,
+        body: str | None = None,
         folder: str = "inbox",
         top_n: int = 20,
-        account: Optional[str] = None,
-    ) -> Dict[str, Any]:
+        account: str | None = None,
+    ) -> dict[str, Any]:
         """Group matching emails server-side and return a small top-N frequency table.
 
         Answers "who emails me most?", "how many per day?", etc. in ONE call, without
@@ -499,8 +499,8 @@ class EmailMCPServer(BaseMCPServer):
             "convert_datetime",
             "group_count",
         ],
-        parameters: Optional[Dict[str, Any]] = None,
-    ) -> Dict[str, Any]:
+        parameters: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         """Apply one declarative, allowlisted transformation to a collection.
 
         Args:
@@ -528,9 +528,9 @@ class EmailMCPServer(BaseMCPServer):
     async def fetch(
         self,
         collection_id: str,
-        limit: Optional[int] = None,
+        limit: int | None = None,
         format: Literal["records", "dict", "csv", "json"] = "records",
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Retrieve email data from a collection created by search-emails.
 
         Args:
@@ -569,7 +569,7 @@ class EmailMCPServer(BaseMCPServer):
         return result
 
     @mcp_tool(name="list")
-    async def list_collections(self) -> List[Dict[str, Any]]:
+    async def list_collections(self) -> list[dict[str, Any]]:
         """List all available email data collections with their metadata.
 
         Returns:
@@ -578,7 +578,7 @@ class EmailMCPServer(BaseMCPServer):
         return self.datastore.list_collections()
 
     @mcp_tool(name="drop")
-    async def drop_collection(self, collection_id: str) -> Dict[str, Any]:
+    async def drop_collection(self, collection_id: str) -> dict[str, Any]:
         """Delete a single email data collection, freeing its slot in the store.
 
         Args:
@@ -594,7 +594,7 @@ class EmailMCPServer(BaseMCPServer):
         }
 
     @mcp_tool(name="clear")
-    async def clear_collections(self) -> Dict[str, Any]:
+    async def clear_collections(self) -> dict[str, Any]:
         """Delete all email data collections, freeing the entire in-memory store.
 
         Use this to reclaim space when the collection store is full. Collections
@@ -607,7 +607,7 @@ class EmailMCPServer(BaseMCPServer):
         return {"cleared": cleared, "remaining": 0}
 
     @mcp_tool(name="preview")
-    async def preview(self, collection_id: str, rows: int = 5) -> Dict[str, Any]:
+    async def preview(self, collection_id: str, rows: int = 5) -> dict[str, Any]:
         """Preview an email collection's structure, data types, and sample records.
 
         Args:
@@ -620,7 +620,7 @@ class EmailMCPServer(BaseMCPServer):
         return self.datastore.preview(collection_id, rows)
 
     @mcp_tool(name="combine")
-    async def combine(self, target_collection_id: str, source_collection_id: str) -> Dict[str, Any]:
+    async def combine(self, target_collection_id: str, source_collection_id: str) -> dict[str, Any]:
         """Combine two email collections by appending source to target.
 
         Collections must have identical column structure.
@@ -640,7 +640,7 @@ class EmailMCPServer(BaseMCPServer):
         collection_id: str,
         output_dir: str,
         include_attachments: bool = True,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Export emails from a collection to markdown files with optional attachments.
 
         Writes files directly to disk without passing content through LLM context.
@@ -703,11 +703,11 @@ class EmailMCPServer(BaseMCPServer):
     @mcp_tool(name="move", capability="mailbox_write")
     async def move_emails(
         self,
-        email_ids: Optional[List[str]] = None,
+        email_ids: list[str] | None = None,
         destination_folder: str = "",
         source_folder: str = "inbox",
-        account: Optional[str] = None,
-        gmail_msgids: Optional[List[str]] = None,
+        account: str | None = None,
+        gmail_msgids: list[str] | None = None,
     ) -> str:
         """Move one or more emails from one folder to another.
 
@@ -747,11 +747,11 @@ class EmailMCPServer(BaseMCPServer):
     @mcp_tool(name="delete", capability="mailbox_write")
     async def delete_emails(
         self,
-        email_ids: Optional[List[str]] = None,
+        email_ids: list[str] | None = None,
         folder: str = "inbox",
         permanent: bool = False,
-        account: Optional[str] = None,
-        gmail_msgids: Optional[List[str]] = None,
+        account: str | None = None,
+        gmail_msgids: list[str] | None = None,
     ) -> str:
         """Delete one or more emails (move to trash by default, or permanently).
 

@@ -4,8 +4,6 @@ This demonstrates how easy it is to create an MCP server with the new framework.
 Just inherit from BaseMCPServer and add @mcp_tool decorated methods!
 """
 
-from typing import List
-
 from mcp_framework import BaseMCPServer, mcp_tool
 
 
@@ -70,7 +68,7 @@ class CalculatorServer(BaseMCPServer):
         return a / b
 
     @mcp_tool(name="calculate-average")
-    async def average(self, numbers: List[float]) -> float:
+    async def average(self, numbers: list[float]) -> float:
         """Calculate the average of a list of numbers.
 
         Args:
